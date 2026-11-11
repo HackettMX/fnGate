@@ -1,9 +1,14 @@
 package cert
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -378,4 +383,110 @@ func parseLeaf(t *testing.T, c *tls.Certificate) *x509.Certificate {
 		t.Fatal(err)
 	}
 	return leaf
+}
+
+// 「导出证书包」必须把证书链和私钥一起给到（飞牛系统证书要求 crt + key），
+// 且两者要能配成一对——否则用户导入后才在浏览器里发现握手失败。
+func TestExportBundleContainsPairedCertAndKey(t *testing.T) {
+	m, _ := newTestManager(t)
+	c, err := m.AddSelfSigned("导出测试", []string{"bundle.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/"+c.ID+"/export", nil)
+	rec := httptest.NewRecorder()
+	NewModule(m).Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Fatalf("Content-Type 应为 application/zip，实际 %q", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "bundle.example.com.zip") {
+		t.Fatalf("文件名应基于主域名，实际 %q", cd)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("证书包不允许被缓存")
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatalf("返回的不是合法 ZIP：%v", err)
+	}
+	files := map[string][]byte{}
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[f.Name] = data
+	}
+	for _, want := range []string{"fullchain.pem", "privkey.pem", "README.txt"} {
+		if len(files[want]) == 0 {
+			t.Fatalf("压缩包缺少 %s", want)
+		}
+	}
+	if !strings.Contains(string(files["fullchain.pem"]), "BEGIN CERTIFICATE") {
+		t.Fatal("fullchain.pem 不是 PEM 证书")
+	}
+	if !strings.Contains(string(files["privkey.pem"]), "PRIVATE KEY") {
+		t.Fatal("privkey.pem 不是 PEM 私钥")
+	}
+	// 私钥与证书必须配套，否则导入飞牛后 HTTPS 起不来。
+	if _, err := tls.X509KeyPair(files["fullchain.pem"], files["privkey.pem"]); err != nil {
+		t.Fatalf("导出的证书与私钥不匹配：%v", err)
+	}
+	if !strings.Contains(string(files["README.txt"]), "bundle.example.com") {
+		t.Fatal("说明文件里应写明域名")
+	}
+}
+
+// 没有本机私钥的证书（例如只导入了证书链）必须明确拒绝，不能给个残缺包。
+func TestExportBundleRejectsCertWithoutKey(t *testing.T) {
+	m, _ := newTestManager(t)
+	c, err := m.AddSelfSigned("无钥匙", []string{"nokey.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MutateCertificate(c.ID, func(x *core.Certificate) error {
+		x.KeyPath = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/"+c.ID+"/export", nil)
+	rec := httptest.NewRecorder()
+	NewModule(m).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，实际 %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "没有本机私钥") {
+		t.Fatalf("错误信息应说明原因，实际 %s", rec.Body.String())
+	}
+}
+
+// GET 只给证书链，私钥不能从这条路出去。
+func TestDownloadNeverReturnsPrivateKey(t *testing.T) {
+	m, _ := newTestManager(t)
+	c, err := m.AddSelfSigned("下载", []string{"dl.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/"+c.ID+"/download", nil)
+	rec := httptest.NewRecorder()
+	NewModule(m).Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "PRIVATE KEY") {
+		t.Fatal("GET /download 泄漏了私钥")
+	}
 }

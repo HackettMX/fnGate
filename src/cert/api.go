@@ -1,11 +1,17 @@
 package cert
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"fngate/api"
+	"fngate/core"
 )
 
 type API struct{ m *Manager }
@@ -23,6 +29,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /{id}", a.detail)
 	mux.HandleFunc("GET /{id}/references", a.references)
 	mux.HandleFunc("GET /{id}/download", a.download)
+	mux.HandleFunc("POST /{id}/export", a.exportBundle)
 	mux.HandleFunc("PUT /{id}", a.update)
 	mux.HandleFunc("DELETE /{id}", a.remove)
 	return mux
@@ -226,13 +233,122 @@ func (a *API) download(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(chain)
 }
 
+// exportBundle 把「证书链 + 私钥」打包成 ZIP，供导入飞牛系统证书等外部场景使用。
+// 只接受 POST：这样必须过同源校验与 CSRF Token，避免被第三方页面诱导下载私钥。
+// GET 的 download 永远只吐公钥证书链。
+func (a *API) exportBundle(w http.ResponseWriter, r *http.Request) {
+	c, ok := a.m.ByID(r.PathValue("id"))
+	if !ok {
+		api.WriteErr(w, http.StatusNotFound, "证书不存在")
+		return
+	}
+	chain, err := a.m.ReadChain(c)
+	if err != nil {
+		api.WriteErr(w, http.StatusNotFound, "证书文件不可读：%v", err)
+		return
+	}
+	key, err := a.m.ReadKey(c)
+	if err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+
+	// 先在内存里打完包再写响应：中途出错还能返回 JSON 错误，不会吐出半个 ZIP。
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	now := time.Now()
+	for _, f := range []struct {
+		name string
+		data []byte
+		mode os.FileMode
+	}{
+		{"fullchain.pem", chain, 0o644},
+		{"privkey.pem", key, 0o600},
+		{"README.txt", []byte(exportReadme(c, now)), 0o644},
+	} {
+		hdr := &zip.FileHeader{Name: f.name, Method: zip.Deflate, Modified: now}
+		hdr.SetMode(f.mode)
+		fw, err := zw.CreateHeader(hdr)
+		if err != nil {
+			api.WriteErr(w, http.StatusInternalServerError, "打包失败：%v", err)
+			return
+		}
+		if _, err := fw.Write(f.data); err != nil {
+			api.WriteErr(w, http.StatusInternalServerError, "打包失败：%v", err)
+			return
+		}
+	}
+	if err := zw.Close(); err != nil {
+		api.WriteErr(w, http.StatusInternalServerError, "打包失败：%v", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, exportName(c)))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(buf.Bytes())
+
+	// 导出私钥是敏感动作，留一条可追溯的日志。
+	a.m.Bus().Publish("cert", "warn", "已导出证书「%s」的私钥（ZIP 包），用完请删除本地副本", c.Name)
+}
+
+// exportName 生成纯 ASCII 的压缩包文件名（Content-Disposition 不接受中文回退）。
+func exportName(c core.Certificate) string {
+	name := strings.ToLower(strings.TrimSpace(c.PrimaryDomain))
+	if name == "" {
+		name = "certificate"
+	}
+	name = strings.TrimPrefix(name, "*.")
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._-")
+	if out == "" {
+		return "certificate"
+	}
+	return out
+}
+
+func exportReadme(c core.Certificate, now time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("fnGate 证书导出包\n")
+	sb.WriteString("==================\n\n")
+	fmt.Fprintf(&sb, "名称：%s\n主域名：%s\n签发者：%s\n有效期：%s ~ %s\nSHA-256 指纹：%s\n导出时间：%s\n\n",
+		c.Name, c.PrimaryDomain, c.Issuer, fmtCertTime(c.NotBefore), fmtCertTime(c.NotAfter), c.Fingerprint, now.Format("2006-01-02 15:04:05"))
+	sb.WriteString("包含文件\n")
+	sb.WriteString("  fullchain.pem  证书链（叶子证书 + 中间证书），导入时选这个\n")
+	sb.WriteString("  privkey.pem    私钥（未加密，权限 0600）\n\n")
+	sb.WriteString("导入飞牛系统证书\n")
+	sb.WriteString("  1. 飞牛桌面 → 系统设置 → 网络 → 证书\n")
+	sb.WriteString("  2. 选择「添加证书 / 导入」，证书选 fullchain.pem，私钥选 privkey.pem\n")
+	sb.WriteString("  3. 保存后到 HTTPS 服务设置里选用这张证书\n\n")
+	sb.WriteString("注意\n")
+	sb.WriteString("  · privkey.pem 等同于该域名的身份，任何人拿到都能冒充它 —— 导入完成后请删除本地副本\n")
+	sb.WriteString("  · 本包由 fnGate 导出，证书续期后需要重新导出并重新导入\n")
+	return sb.String()
+}
+
+// fmtCertTime 把库里存的 RFC3339 时间显示成本地可读格式，解析失败就原样回显。
+func fmtCertTime(s string) string {
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(s)); err == nil {
+		return t.Local().Format("2006-01-02 15:04")
+	}
+	return s
+}
+
 type updatePayload struct {
 	Name      string `json:"name"`
 	AutoRenew *bool  `json:"auto_renew"`
 }
 
-func (a *API) update(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+func (a *API) update(w http.ResponseWriter, r *http.Request) {	id := r.PathValue("id")
 	var p updatePayload
 	if err := api.DecodeJSON(r, &p); err != nil {
 		api.WriteErr(w, http.StatusBadRequest, "%v", err)

@@ -91,6 +91,7 @@
         '<span class="link" data-rename="' + FG.esc(c.id) + '">重命名</span>' +
         '<span class="link" data-default="' + FG.esc(c.id) + '">' + (c.is_default ? '取消默认' : '设为默认') + '</span>' +
         '<span class="link" data-download="' + FG.esc(c.id) + '">下载</span>' +
+        '<span class="link" data-export="' + FG.esc(c.id) + '">导出</span>' +
         (c.source === 'acme' ? '<span class="link" data-renew="' + FG.esc(c.id) + '">' + (c.auto_renew ? '关闭续期' : '开启续期') + '</span>' +
           '<span class="link" data-renew-now="' + FG.esc(c.id) + '">立即续期</span>' : '') +
         '<span class="link danger" data-del="' + FG.esc(c.id) + '">删除</span>' +
@@ -234,7 +235,7 @@
       html += '<p class="hint" style="color:var(--text-3);font-size:12px">' +
         '飞牛系统证书为只读导入，不会修改飞牛证书库；同步由 root 侧 helper 生成私有快照，降权后的应用进程只读取快照。' +
         (data.fnos_synced_at ? '上次快照：' + FG.esc(data.fnos_synced_at) + '（' + (data.fnos_snapshot || 0) + ' 张）' : '尚未生成快照') +
-        ' · 下载仅提供公钥证书链，私钥永不导出。</p>';
+        ' · 「下载」只给公钥证书链；「导出」会把证书链与私钥打包成 ZIP（二次确认后），用于导入飞牛系统证书。</p>';
 
       root.innerHTML = html;
 
@@ -313,6 +314,31 @@
             a.download = (find(attr('data-download')).name || 'certificate') + '.pem';
             a.click();
             setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+            return;
+          }
+          if (attr('data-export')) {
+            var ec = find(attr('data-export'));
+            var goOn = await FG.confirmBox(
+              '导出包内含该证书的私钥（privkey.pem），用于导入飞牛系统证书。\n' +
+              '私钥等同于域名身份，任何拿到它的人都能冒充该域名 —— 请勿转发，导入完成后删除本地副本。\n\n继续导出？',
+              '导出证书包');
+            if (!goOn) return;
+            var resp = await fetch('api/cert/' + ec.id + '/export', {
+              method: 'POST', credentials: 'same-origin',
+              headers: { 'X-CSRF-Token': FG.csrf }
+            });
+            if (!resp.ok) {
+              var msg = 'HTTP ' + resp.status;
+              try { var j = await resp.json(); msg = j.error || msg; } catch (_) { }
+              throw new Error(msg);
+            }
+            var zb = await resp.blob();
+            var ea = document.createElement('a');
+            ea.href = URL.createObjectURL(zb);
+            ea.download = (ec.primary_domain || 'certificate') + '.zip';
+            ea.click();
+            setTimeout(function () { URL.revokeObjectURL(ea.href); }, 1000);
+            FG.toast('已导出证书包（含私钥），用完请删除本地副本', 'ok');
             return;
           }
           if (attr('data-del')) {

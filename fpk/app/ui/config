@@ -2,7 +2,7 @@
   ".url": {
     "fngate.main": {
       "title": "路由网关",
-      "icon": "images/icon_v1_2_3_{0}.png",
+      "icon": "images/icon_v1_2_4_{0}.png",
       "type": "iframe",
       "protocol": "",
       "gatewayPrefix": "/app/fngate",

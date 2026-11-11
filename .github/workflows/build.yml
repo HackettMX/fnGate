@@ -121,6 +121,11 @@ jobs:
 
             ### 本版变更
 
+            **1.2.4**
+            - 证书库新增「导出」：把 `fullchain.pem`、`privkey.pem` 和一份导入说明打包成 ZIP，
+              用于把申请的证书导入飞牛系统或其它设备。
+            - 导出需二次确认，走 `POST` + CSRF Token，响应 `Cache-Control: no-store`；没有本机私钥的证书直接拒绝，不给残缺包。
+
             **1.2.3**
             - 修复 `*.example.com` 这类泛域名签发时 CA 报 `No TXT record found`：当 `_acme-challenge`
               被 `*` 通配记录 CNAME 指向主域名时，现在**查 DNS 服务商记录接口**判断 CNAME

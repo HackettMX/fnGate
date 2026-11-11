@@ -167,6 +167,26 @@ func (m *Manager) ReadChain(c core.Certificate) ([]byte, error) {
 	return os.ReadFile(p)
 }
 
+// ReadKey 只在「导出证书包」这一条路径上被调用：私钥不进任何 API 响应体、
+// 不进日志，仅作为 ZIP 附件直接写给浏览器。调用方必须负责鉴权与二次确认。
+func (m *Manager) ReadKey(c core.Certificate) ([]byte, error) {
+	if strings.TrimSpace(c.KeyPath) == "" {
+		return nil, fmt.Errorf("该证书没有本机私钥（可能只导入过证书链），无法导出完整证书包")
+	}
+	p, err := m.absFromRel(c.KeyPath)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("私钥文件不可读：%w", err)
+	}
+	if !strings.Contains(string(data), "PRIVATE KEY") {
+		return nil, fmt.Errorf("私钥文件内容异常，已中止导出")
+	}
+	return data, nil
+}
+
 // ---------- CertResolver ----------
 
 func fileStamp(p string) string {
