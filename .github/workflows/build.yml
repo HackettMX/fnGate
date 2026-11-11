@@ -91,34 +91,71 @@ jobs:
           tar -tvzf "dist/fngate-${VERSION}.fpk" | head -30
           ls -lh dist/
 
+      - name: 生成校验和
+        run: |
+          cd dist
+          sha256sum ./*.fpk > checksums.txt
+          cat checksums.txt
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: fngate-fpk
-          path: dist/*.fpk
+          path: |
+            dist/*.fpk
+            dist/checksums.txt
 
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.fpk
-          generate_release_notes: true
+          files: |
+            dist/*.fpk
+            dist/checksums.txt
+          fail_on_unmatched_files: true
           body: |
             ## 路由网关 · fnGate v${{ steps.meta.outputs.version }}
 
-            **原生应用（无需 Docker）**：安装包内已包含 amd64 / arm64 / arm 三份静态编译的可执行文件，
-            安装时不联网、不拉取任何镜像。
+            **原生应用，不需要 Docker。** 安装包里已含 amd64 / arm64 / armv6 三份静态编译的可执行文件，
+            安装与运行全程不联网、不拉任何镜像。
 
-            ### 功能
-            - 路由端口转发：UPnP IGD 发现、映射增删、路由器重启后自动补发
-            - 反向代理：入口 + 路由双层模型，HTTP / HTTPS / TCP，域名与路径路由，SNI 证书
-            - 证书管理：飞牛系统证书只读导入、手动上传、ACME DNS-01 泛域名申请、自动续期
+            ### 本版变更
+
+            **1.2.3**
+            - 修复 `*.example.com` 这类泛域名签发时 CA 报 `No TXT record found`：当 `_acme-challenge`
+              被 `*` 通配记录 CNAME 指向主域名时，现在**查 DNS 服务商记录接口**判断 CNAME
+              （不再依赖本机 DNS，规避 NAS 上 fake-ip 代理的干扰），把 TXT 写到 CNAME 目标名。
+            - 订单日志新增 `TXT 落点` 一行，失败时可直接看出记录写到了哪个名字。
+
+            **1.2.2**
+            - 名称统一：路由转发、域名解析、证书申请。
+            - 原「网络 → 域名解析」的解析查询与体检并入「证书 → 域名解析」。
+
+            ### 功能一览
+
+            | 模块 | 能力 |
+            | --- | --- |
+            | 路由转发 | UPnP IGD 自动发现、映射增删、路由器重启后补发 |
+            | 反向代理 | 入口 + 路由双层模型，HTTP / HTTPS / TCP，域名与路径路由，SNI 证书，健康检查 |
+            | 证书管理 | 证书库、飞牛系统证书只读导入、手动上传、到期提醒 |
+            | 证书申请 | ACME DNS-01 泛域名申请、自动续期、多家 DNS 服务商 |
+            | 域名解析 | 多 DNS 并排查询、一键体检（NS 委派 / SOA / apex NS / fake-ip 检测） |
 
             ### 安装
-            飞牛「应用中心 → 设置 → 手动安装」上传本页的 `.fpk` 文件即可。
-            装好后从桌面图标打开（走飞牛统一网关，不占用管理端口）。
+
+            1. 下载本页下方的 `fngate-${{ steps.meta.outputs.version }}.fpk`
+            2. 飞牛「应用中心 → 设置 → 手动安装」，上传该文件
+            3. 从桌面图标打开（走飞牛统一网关，不占用管理端口）
 
             ### 前置条件
-            - 路由器需开启 UPnP（端口转发功能）
-            - 绑定 80 / 443 需要应用启动时授予 cap_net_bind_service（脚本自动处理）
-            - 申请泛域名证书需要对应 DNS 服务商的 API 凭据，或使用手动 TXT 验证
+
+            - 端口转发需要路由器开启 UPnP
+            - 绑定 80 / 443 需要 `cap_net_bind_service`（安装脚本自动授予）
+            - 申请证书需要对应 DNS 服务商的 API 凭据，或用手动 TXT 验证
+
+            ### 校验
+
+            安装包 SHA256 见下方附件旁的 `checksums.txt`。
+
+            ---
+            完整说明与排错手册见 [README](https://github.com/${{ github.repository }}#readme)。
