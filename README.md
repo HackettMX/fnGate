@@ -193,15 +193,25 @@ lego 会一直等到超时。本应用在提交 CA **之前**先探测，命中�
 
 ## 📦 安装
 
-1. 下载 [Release](https://github.com/HackettMX/fnGate/releases) 里的 `fngate-<版本>.fpk`
+1. 下载 [![最新版](https://img.shields.io/github/v/release/HackettMX/fnGate?label=%E4%B8%8B%E8%BD%BD&color=2f81f7)](https://github.com/HackettMX/fnGate/releases/latest)
+   里的 `fngate-<版本>.fpk`
 2. 飞牛 **应用中心 → 设置 → 手动安装**，上传该文件
 3. 安装完成后从桌面图标打开（走飞牛统一网关）
+
+安装包为三架构合一的原生包（amd64 / arm64 / armv6），装的时候不联网、不拉镜像。
+校验可用同一 Release 下的 `checksums.txt`：
+
+```bash
+sha256sum -c checksums.txt
+```
 
 **前置条件**
 
 - 路由器开启 **UPnP**（端口转发功能需要）
 - 绑定 80/443 需要 `cap_net_bind_service`（安装脚本自动处理）
 - 申请泛域名证书需要对应 DNS 服务商的 API 凭据，或使用「手动 TXT」验证
+
+**升级**：直接上传新版本 `.fpk` 覆盖安装，配置与证书都在 `/vol1/@appdata/fngate`，不会丢。
 
 ---
 
