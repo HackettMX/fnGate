@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <base href="{{BASE}}" />
+  <meta name="csrf-token" content="{{CSRF}}" />
+  <title>路由网关 · fnGate</title>
+  <link rel="stylesheet" href="static/css/style.css?v={{VERSION}}" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 48 48" width="28" height="28" fill="none">
+            <rect x="4" y="4" width="40" height="40" rx="11" fill="#2f6fed" />
+            <path d="M14 18h13a6 6 0 0 1 6 6v0a6 6 0 0 1-6 6H14V18z" stroke="#fff" stroke-width="2.6" />
+            <path d="M14 24h11M30 24h5M33 20l3 4-3 4" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
+        <div class="brand-text">
+          <strong>路由网关</strong>
+          <span>fnGate</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <div class="nav-group">工作台</div>
+        <button type="button" class="nav-item active" data-page="overview"><span class="nav-ico">◫</span>概览</button>
+        <div class="nav-group">网络</div>
+        <button type="button" class="nav-item" data-page="forward"><span class="nav-ico">⇄</span>路由转发</button>
+        <button type="button" class="nav-item" data-page="proxy"><span class="nav-ico">⇥</span>反向代理</button>
+        <div class="nav-group">证书</div>
+        <button type="button" class="nav-item" data-page="cert"><span class="nav-ico">▣</span>证书管理</button>
+        <button type="button" class="nav-item" data-page="acme"><span class="nav-ico">⟳</span>证书申请</button>
+        <button type="button" class="nav-item" data-page="dns"><span class="nav-ico">◇</span>域名解析</button>
+        <div class="nav-group">系统</div>
+        <button type="button" class="nav-item" data-page="settings"><span class="nav-ico">⚙</span>设置</button>
+        <button type="button" class="nav-item" data-page="logs"><span class="nav-ico">≡</span>日志</button>
+      </nav>
+      <div class="side-foot">
+        <span class="dot dot-on" id="side-dot"></span>
+        <span id="side-status">连接中…</span>
+        <span class="side-ver">v{{VERSION}}</span>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="page-title">概览</h1>
+          <p id="page-sub">网关、转发与证书的运行状态</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="perm-pill" class="pill pill-warn" hidden>无法绑定低端口</span>
+          <button type="button" id="btn-refresh" class="btn btn-ghost" title="刷新当前页面数据">刷新</button>
+        </div>
+      </header>
+      <main class="content" id="page"></main>
+    </div>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root"></div>
+
+  <script src="static/js/app.js?v={{VERSION}}"></script>
+  <script src="static/js/overview.js?v={{VERSION}}"></script>
+  <script src="static/js/forward.js?v={{VERSION}}"></script>
+  <script src="static/js/proxy.js?v={{VERSION}}"></script>
+  <script src="static/js/cert.js?v={{VERSION}}"></script>
+  <script src="static/js/acme.js?v={{VERSION}}"></script>
+  <script src="static/js/dns.js?v={{VERSION}}"></script>
+  <script src="static/js/settings.js?v={{VERSION}}"></script>
+</body>
+</html>

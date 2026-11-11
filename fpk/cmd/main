@@ -1,0 +1,280 @@
+#!/bin/bash
+# fnGate 原生应用生命周期脚本
+# 由飞牛应用中心调用：main start | stop | status
+#   start  启动进程并等待统一网关 Socket 就绪，成功 0，失败 1
+#   stop   优雅停止（SIGTERM→SIGKILL 兜底），成功 0
+#   status 运行中返回 0，未运行返回 3（飞牛据此判断应用状态）
+#
+# 权限说明：应用以 root 启动（config/privilege 中 run-as=root），目的只有一个——
+# 能绑定 80/443 这类 1024 以下端口。start 会先给二进制授予 CAP_NET_BIND_SERVICE，
+# 再用 runuser 降权为应用用户运行；进程本身不是 root，能力范围仅「绑定低端口」。
+set -u
+
+APP_ROOT="${TRIM_APPDEST:-/var/apps/fngate/target}"
+DATA_DIR="${TRIM_PKGVAR:-/tmp/fngate}"
+PID_FILE="${DATA_DIR}/fngate.pid"
+LOG_FILE="${DATA_DIR}/fngate.log"
+
+# 应用用户（config/privilege 中的 username）。
+# 本应用以 root 身份启动（见 config/privilege），只为拿到 1024 以下端口的绑定能力，
+# 随后会降权到该用户运行，进程本身不是 root。
+APP_USER="${TRIM_USERNAME:-fngate}"
+APP_GROUP="${TRIM_GROUPNAME:-$APP_USER}"
+
+# 启动前缀（runuser 等）；为空表示直接以当前身份运行。
+LAUNCH=()
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null
+}
+
+fail() {
+  # 飞牛会把该文件内容弹窗展示给用户
+  printf '%s\n' "$*" >>"${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null
+  log "ERROR: $*"
+  exit 1
+}
+
+# 安装包内同时携带 amd64 / arm64 / arm(v7) 三份静态二进制，
+# 运行时按设备架构挑选，因此 manifest 可以声明 platform="all"。
+detect_arch() {
+  case "$(uname -m 2>/dev/null || echo unknown)" in
+    x86_64 | amd64) printf 'amd64' ;;
+    aarch64 | arm64) printf 'arm64' ;;
+    # armv8l = ARMv8 硬件跑 32 位用户空间，只能装 32 位二进制
+    armv7l | armv7 | armv6l | armv8l | arm) printf 'arm' ;;
+    *) printf '' ;;
+  esac
+}
+
+# 按架构找不到时，逐个试跑包内二进制（--version 立即退出），
+# 以防 uname 结果与二进制实际 ABI 不符导致"装得上但起不来"。
+probe_bin() {
+  local candidate
+  for candidate in "${APP_ROOT}"/bin/fngate-* "${APP_ROOT}"/target/bin/fngate-*; do
+    [ -x "$candidate" ] || continue
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 5 "$candidate" --version >/dev/null 2>&1 && { printf '%s' "$candidate"; return 0; }
+    else
+      "$candidate" --version >/dev/null 2>&1 && { printf '%s' "$candidate"; return 0; }
+    fi
+  done
+  return 1
+}
+
+# 不同 fnOS 版本解包层级不一（有的带 target 层、有的直接铺在应用根），
+# 逐个探测，避免因路径差异导致"启动成功但页面白屏"。
+resolve_bin() {
+  local arch candidate
+  arch="$(detect_arch)"
+  local candidates=()
+  if [ -n "$arch" ]; then
+    candidates+=(
+      "${APP_ROOT}/bin/fngate-${arch}"
+      "${APP_ROOT}/target/bin/fngate-${arch}"
+    )
+  fi
+  candidates+=(
+    "${APP_ROOT}/bin/fngate"
+    "${APP_ROOT}/target/bin/fngate"
+    "/var/apps/fngate/target/bin/fngate"
+    "/var/apps/fngate/bin/fngate"
+    "$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/app/bin/fngate"
+  )
+  for candidate in "${candidates[@]}"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  done
+
+  probe_bin
+}
+
+read_pid() {
+  [ -f "$PID_FILE" ] || return 1
+  head -n 1 "$PID_FILE" 2>/dev/null | tr -dc '0-9'
+}
+
+is_running() {
+  local pid
+  pid="$(read_pid)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# 等待统一网关 Socket 就绪（应用通过 Socket 提供服务，不监听 TCP 端口）
+wait_ready() {
+  local sock="$1" i
+  for i in $(seq 1 50); do
+    [ -S "$sock" ] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+# 给二进制授予 CAP_NET_BIND_SERVICE：这是绑定 1024 以下端口所需的唯一特权，
+# 比整个进程跑 root 窄得多。每次启动都重新授予，升级替换二进制后依然有效。
+grant_bind_cap() {
+  local bin="$1"
+  command -v setcap >/dev/null 2>&1 || return 1
+  setcap cap_net_bind_service=+ep "$bin" 2>/dev/null || return 1
+  if command -v getcap >/dev/null 2>&1; then
+    # 部分文件系统不支持 xattr，setcap 会「成功」但能力没落盘，这里实测确认。
+    getcap "$bin" 2>/dev/null | grep -q 'cap_net_bind_service' || return 1
+  fi
+  return 0
+}
+
+# 决定以什么身份跑服务进程。
+# 优先：root 启动 → 授予绑定能力 → runuser 降权为应用用户（进程不是 root，但能绑 80/443）。
+# 任一环节不满足就退回 root 直接运行：功能不缺失，只是权限没降下来。
+prepare_launch() {
+  local app_root="$1" app_bin="$2"
+  LAUNCH=()
+
+  [ "$(id -u 2>/dev/null)" = "0" ] || return 0 # 本地调试（非 root）无需降权
+
+  if ! command -v runuser >/dev/null 2>&1; then
+    log "WARN: 未找到 runuser，改为 root 身份运行（低端口可用，权限未降级）"
+    return 0
+  fi
+  if ! id -u "$APP_USER" >/dev/null 2>&1; then
+    log "WARN: 应用用户 ${APP_USER} 不存在，改为 root 身份运行"
+    return 0
+  fi
+  if ! runuser -u "$APP_USER" -- test -w "$app_root" 2>/dev/null; then
+    log "WARN: ${app_root} 对 ${APP_USER} 不可写（Socket 无法创建），改为 root 身份运行"
+    return 0
+  fi
+  if ! grant_bind_cap "$app_bin"; then
+    log "WARN: 无法授予 cap_net_bind_service（缺 setcap 或文件系统不支持 xattr），改为 root 身份运行"
+    return 0
+  fi
+  # 自检：nosuid 等挂载会吞掉文件能力，setcap/getcap 都正常但降权后绑不了低端口。
+  # 这里真的以应用用户执行一次自检，拿不到能力就不降权。
+  if ! runuser -u "$APP_USER" -- "$app_bin" --check-bind >/dev/null 2>&1; then
+    log "WARN: 降权后自查不到 cap_net_bind_service（挂载可能带 nosuid），改为 root 身份运行"
+    return 0
+  fi
+
+  LAUNCH=(runuser -u "$APP_USER" --)
+  log "已授予 cap_net_bind_service，降权为 ${APP_USER} 运行"
+}
+
+start() {
+  if is_running; then
+    log "already running, pid=$(read_pid)"
+    return 0
+  fi
+
+  local app_bin
+  app_bin="$(resolve_bin)" || fail "找不到可运行的二进制：当前架构 $(uname -m 2>/dev/null)，已尝试 ${APP_ROOT}/bin/fngate-{amd64,arm64,arm}。请确认安装包完整，或重新安装应用"
+
+  # 飞牛统一网关要求 Socket 位于应用 target 目录下，与 app/ui/config 的
+  # gatewaySocket 对应（即 ${app_root}/app.sock）。
+  local app_root app_socket
+  app_root="$(cd "$(dirname "$app_bin")/.." 2>/dev/null && pwd)"
+  app_socket="${app_root}/app.sock"
+  # root 启动时安装目录属 root，而降权后的应用用户要在这里创建 app.sock，
+  # 所以先把目录交给应用用户组（chgrp 只作用于目录，不会清掉二进制上的 capability）。
+  chgrp "$APP_GROUP" "$app_root" 2>/dev/null || true
+  chmod 775 "$app_root" 2>/dev/null || true
+
+  mkdir -p "$DATA_DIR" || fail "无法创建数据目录：$DATA_DIR"
+  : >>"$LOG_FILE" 2>/dev/null
+
+  # 数据目录里有 rules.json / 证书 / 日志，降权后应用用户必须能写。
+  if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR" 2>/dev/null || true
+  fi
+
+  # root 侧 helper：把飞牛系统证书（含私钥）复制成应用私有快照。
+  # 固定参数、固定白名单路径，不接收任何来自前端的文件路径；失败不影响主服务启动。
+  if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    FNGATE_APP_USER="$APP_USER" FNGATE_DATA_DIR="$DATA_DIR" \
+      "$app_bin" --cert-sync --data "$DATA_DIR" >>"$LOG_FILE" 2>&1 ||
+      log "WARN: 飞牛证书同步未成功（可能不是 fnOS 或尚无系统证书），可在证书管理页手动上传"
+    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR/certs" "$DATA_DIR/secrets" 2>/dev/null || true
+  fi
+
+  prepare_launch "$app_root" "$app_bin"
+
+  # 用 env 显式传参：runuser 可能重置部分环境变量，不能依赖前缀赋值穿透。
+  local -a argv
+  argv=("${LAUNCH[@]}" env \
+    "FNGATE_DATA_DIR=$DATA_DIR" \
+    "FNGATE_SOCKET=$app_socket" \
+    "FNGATE_GATEWAY_PREFIX=/app/fngate" \
+    "FNGATE_LOG_LEVEL=INFO" \
+    "$app_bin")
+
+  log "starting: $app_bin data=$DATA_DIR socket=$app_socket user=${APP_USER} drop=$([ ${#LAUNCH[@]} -gt 0 ] && echo yes || echo no) arch=$(uname -m 2>/dev/null)/$(detect_arch)"
+  cd "$DATA_DIR" || return 1
+
+  if command -v setsid >/dev/null 2>&1; then
+    # setsid 让进程成为独立进程组，stop 时可以整组回收（含 runuser 的子进程）
+    setsid "${argv[@]}" >>"$LOG_FILE" 2>&1 &
+  else
+    nohup "${argv[@]}" >>"$LOG_FILE" 2>&1 &
+  fi
+
+  echo $! >"$PID_FILE"
+
+  if wait_ready "$app_socket" && is_running; then
+    log "started, pid=$(read_pid) socket=$app_socket"
+    return 0
+  fi
+
+  local detail
+  detail="$(tail -n 5 "$LOG_FILE" 2>/dev/null | tr '\n' ' ')"
+  stop >/dev/null 2>&1
+  fail "服务启动失败，统一网关 Socket（${app_socket}）在 10 秒内未就绪。日志：${LOG_FILE} ${detail}"
+}
+
+stop() {
+  if ! is_running; then
+    rm -f "$PID_FILE"
+    return 0
+  fi
+
+  local pid i
+  pid="$(read_pid)"
+  log "stopping pid=$pid"
+
+  # 优先按进程组终止（setsid 场景），失败则退化为单进程
+  kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+
+  for i in $(seq 1 25); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+
+  if kill -0 "$pid" 2>/dev/null; then
+    log "graceful stop timeout, sending SIGKILL"
+    kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    sleep 0.3
+  fi
+
+  rm -f "$PID_FILE"
+  log "stopped"
+  return 0
+}
+
+status() {
+  # 应用通过统一网关 Socket 提供服务；二进制启动后会阻塞运行，存活即视为运行中。
+  if is_running; then
+    return 0
+  fi
+  return 3
+}
+
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  status) status ;;
+  cert-sync)
+    # 供管理员手工刷新系统证书快照（需 root 身份）。
+    b="$(resolve_bin)" || fail "找不到可运行的二进制"
+    FNGATE_APP_USER="$APP_USER" FNGATE_DATA_DIR="$DATA_DIR" "$b" --cert-sync --data "$DATA_DIR"
+    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR/certs" "$DATA_DIR/secrets" 2>/dev/null || true
+    ;;
+  *) fail "未知命令：${1:-}" ;;
+esac

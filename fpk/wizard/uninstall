@@ -1,0 +1,37 @@
+[
+  {
+    "stepTitle": "卸载路由网关",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "端口映射记录、反代入口与路由、证书元数据保存在本机应用数据目录；证书私钥、ACME 账户密钥与 DNS 凭据保存在其中的 secrets 子目录。保留数据后若重新安装本应用，原有配置会自动恢复。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_keep_data",
+        "label": "应用数据",
+        "initValue": "keep",
+        "options": [
+          {
+            "label": "保留数据（推荐，重新安装后可继续使用）",
+            "value": "keep"
+          },
+          {
+            "label": "删除数据（同时清除证书私钥与 DNS 凭据，不可恢复）",
+            "value": "delete"
+          }
+        ],
+        "rules": [
+          {
+            "required": true,
+            "message": "请选择如何处理应用数据"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "无论选择哪一项，路由器上已生效的端口映射都不会被自动删除；如需一并清理，请在卸载前回到「路由端口转发」页面手动删除。飞牛系统自带证书不会被修改。"
+      }
+    ]
+  }
+]

@@ -1,0 +1,17 @@
+{
+  ".url": {
+    "fngate.main": {
+      "title": "路由网关",
+      "icon": "images/icon_v1_2_3_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/fngate",
+      "gatewaySocket": "app.sock",
+      "url": "/app/fngate",
+      "allUsers": true,
+      "control": {
+        "accessPerm": "hidden"
+      }
+    }
+  }
+}

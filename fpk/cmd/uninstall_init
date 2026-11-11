@@ -1,0 +1,48 @@
+#!/bin/sh
+# fnGate 卸载前钩子
+#   1) 先停进程，避免业务端口与统一网关 Socket 残留；
+#   2) 按卸载向导的选择处理数据：
+#        wizard_keep_data=keep   保留（默认，重装后配置仍在）
+#        wizard_keep_data=delete 删除本应用自己的数据文件
+# 只清理明确列出的文件名与应用自有的两个子目录，绝不对 DATA_DIR 整体 rm -rf。
+set -u
+
+"$(dirname "$0")/main" stop >/dev/null 2>&1 || true
+
+DATA_DIR="${TRIM_PKGVAR:-}"
+if [ -z "$DATA_DIR" ] && [ -n "${TRIM_APPDEST:-}" ]; then
+  DATA_DIR="$(cd "${TRIM_APPDEST}/.." 2>/dev/null && pwd)/var"
+fi
+
+CHOICE="${wizard_keep_data:-keep}"
+
+case "$CHOICE" in
+  delete | DELETE | Delete | 删除 | 1 | true | yes)
+    # 目录为空、指向根目录或看起来不像应用数据目录时，宁可跳过也不误删。
+    case "$DATA_DIR" in
+      "" | "/" | "/var" | "/var/apps" | "/tmp" | "/data") echo "fnGate: 数据目录不安全，跳过删除"; exit 0 ;;
+    esac
+    if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR" ] && [ -f "${DATA_DIR}/state.json" -o -d "${DATA_DIR}/secrets" -o -d "${DATA_DIR}/certs" ]; then
+      removed=0
+      for name in state.json state.json.tmp state.json.corrupt fngate.pid fngate.log access.log; do
+        if [ -e "${DATA_DIR}/${name}" ]; then
+          rm -f "${DATA_DIR}/${name}" && removed=$((removed + 1))
+        fi
+      done
+      for sub in certs secrets; do
+        if [ -d "${DATA_DIR}/${sub}" ]; then
+          rm -rf "${DATA_DIR}/${sub}" && removed=$((removed + 1))
+        fi
+      done
+      rmdir "$DATA_DIR" 2>/dev/null || true
+      echo "fnGate: 已删除应用数据（${removed} 项）：${DATA_DIR}"
+    else
+      echo "fnGate: 未识别到本应用数据，跳过删除"
+    fi
+    ;;
+  *)
+    echo "fnGate: 已保留应用数据：${DATA_DIR:-未知}"
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,21 @@
+appname="fngate"
+version="1.2.3"
+display_name="路由网关"
+desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（飞牛证书导入、ACME 泛域名申请与自动续期、手动上传）。三模块统一管理，原生应用，无需 Docker。"
+source="thirdparty"
+platform="all"
+
+maintainer="fnGate"
+maintainer_url=""
+
+os_min_version="0.9.0"
+
+ctl_stop=true
+checkport=false
+install_type=""
+
+desktop_uidir="ui"
+desktop_applaunchname="fngate.main"
+disable_authorization_path=true
+
+changelog="1.2.3 修复 _acme-challenge 被 * 通配 CNAME 指向主域名时 TXT 写错位置（CA 报 No TXT record found）：改为查 DNS 服务商记录判断 CNAME、不依赖本机 DNS，TXT 写到 CNAME 目标名并兼容传播检查。1.2.2 名称调整（路由转发 / 域名解析 / 证书申请）。1.0.0 首个版本：路由转发、反向代理、证书管理（含 ACME 泛域名申请与自动续期）。"

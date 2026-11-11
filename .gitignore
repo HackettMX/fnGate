@@ -1,0 +1,17 @@
+*.fpk
+fpk/app/bin/*
+# 构建时按版本号生成的图标副本；源图为 fpk/app/ui/images/icon_64.png 与 icon_256.png
+fpk/app/ui/images/icon_v*_*.png
+dist/*
+.tools/fnpack*
+.localdata/
+# 本地工作区数据（会话记录、记忆、临时产物），不进仓库
+.workbuddy/
+.venv/
+__pycache__/
+*.pyc
+*.log
+*.pid
+.DS_Store
+# 调试截图
+assets/_current_icons_check.png

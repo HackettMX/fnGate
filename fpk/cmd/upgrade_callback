@@ -1,0 +1,3 @@
+#!/bin/sh
+# fnGate upgrade_callback 回调钩子：无额外处理，保持幂等。
+exit 0

@@ -1,0 +1,4 @@
+#!/bin/sh
+# fnGate 升级前钩子：先停旧进程，避免替换二进制时出现 Text file busy。
+"$(dirname "$0")/main" stop >/dev/null 2>&1 || true
+exit 0
