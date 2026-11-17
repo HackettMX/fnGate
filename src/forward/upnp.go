@@ -85,14 +85,63 @@ func (c *igdConn) externalIP(ctx context.Context) (string, error) {
 	return "", errors.New("路由器不支持查询公网 IP")
 }
 
+// addPortMapping 添加映射。部分国产路由器/光猫对 UPnP 参数格外挑剔，
+// 对完全合规的请求也返回 402 Invalid Args。这里按序降级重试：
+//   1) 空 RemoteHost + 原样租期（标准写法，绝大多数路由器接受）
+//   2) RemoteHost="*" + 原样租期（少数固件不接受空串）
+//   3) 空 RemoteHost + 有限租期（部分光猫不接受 LeaseDuration=0 表示永久）
+//   4) RemoteHost="*" + 有限租期
+// 400/501/718 等明确错误不重试，避免掩盖真实问题。
+// portMappingVariant 是一次 AddPortMapping 调用的参数组合。
+type portMappingVariant struct {
+	remoteHost string
+	lease      uint32
+}
+
+// portMappingVariants 生成 402 降级重试的参数组合。
+// 顺序有讲究：标准写法优先，尽量不改变路由器上的实际语义。
+func portMappingVariants(lease uint32) []portMappingVariant {
+	variants := []portMappingVariant{{"", lease}, {"*", lease}}
+	if lease == 0 {
+		// LeaseDuration=0 在规范里代表永久，但不少路由器直接判为非法参数。
+		// 用 86400 秒（1 天）兜底，配合应用的自动补发，实际仍是"永久"效果。
+		variants = append(variants, portMappingVariant{"", 86400}, portMappingVariant{"*", 86400})
+	}
+	return variants
+}
+
+// tryPortMappingVariants 按序尝试参数组合：成功即返回；仅 402 才继续降级，
+// 其它错误（如 718 端口冲突）立即返回，避免把真实故障伪装成"参数不兼容"。
+func tryPortMappingVariants(variants []portMappingVariant, call func(portMappingVariant) error) error {
+	var lastErr error
+	for _, v := range variants {
+		if err := call(v); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if upnpErrorCode(err) != 402 {
+				return err
+			}
+		}
+	}
+	return lastErr
+}
+
 func (c *igdConn) addPortMapping(ctx context.Context, extPort uint16, protocol string, intPort uint16, client, description string, lease uint32) error {
+	return tryPortMappingVariants(portMappingVariants(lease), func(v portMappingVariant) error {
+		return c.addPortMappingOnce(ctx, v.remoteHost, extPort, protocol, intPort, client, description, v.lease)
+	})
+}
+
+// addPortMappingOnce 发起单次 SOAP 调用。抽成函数便于单测注入不同固件的响应。
+func (c *igdConn) addPortMappingOnce(ctx context.Context, remoteHost string, extPort uint16, protocol string, intPort uint16, client, description string, lease uint32) error {
 	switch {
 	case c.ip1 != nil:
-		return c.ip1.AddPortMappingCtx(ctx, "", extPort, protocol, intPort, client, true, description, lease)
+		return c.ip1.AddPortMappingCtx(ctx, remoteHost, extPort, protocol, intPort, client, true, description, lease)
 	case c.ppp1 != nil:
-		return c.ppp1.AddPortMappingCtx(ctx, "", extPort, protocol, intPort, client, true, description, lease)
+		return c.ppp1.AddPortMappingCtx(ctx, remoteHost, extPort, protocol, intPort, client, true, description, lease)
 	case c.ip2 != nil:
-		return c.ip2.AddPortMappingCtx(ctx, "", extPort, protocol, intPort, client, true, description, lease)
+		return c.ip2.AddPortMappingCtx(ctx, remoteHost, extPort, protocol, intPort, client, true, description, lease)
 	}
 	return errors.New("路由器不支持添加端口映射")
 }
@@ -365,7 +414,14 @@ func (m *UPnPManager) GetSpecific(ctx context.Context, externalPort int, protoco
 	defer cancel()
 	entry, err := m.conn.specificEntry(callCtx, uint16(externalPort), protocol)
 	if err != nil {
-		if upnpErrorCode(err) == 714 {
+		code := upnpErrorCode(err)
+		if code == 714 {
+			return nil, nil
+		}
+		if code == 402 {
+			// 部分固件对 GetSpecificPortMappingEntry 也返回 Invalid Args，
+			// 导致无法预检冲突。此时不阻断添加：AddMapping 侧有 402 降级重试，
+			// 真有冲突时路由器会返回 718，提示比卡在 402 更明确。
 			return nil, nil
 		}
 		return nil, errors.New(friendlyError(err))
@@ -413,6 +469,18 @@ func errNoGatewayOr(err error) error {
 }
 
 var upnpCodePattern = regexp.MustCompile(`<errorCode>\s*(\d+)\s*</errorCode>`)
+var upnpDescPattern = regexp.MustCompile(`(?is)<errorDescription[^>]*>(.*?)</errorDescription>`)
+
+func extractXMLTag(raw, tag string) string {
+	if tag != "errorDescription" {
+		return ""
+	}
+	match := upnpDescPattern.FindStringSubmatch(raw)
+	if len(match) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
 
 func upnpErrorCode(err error) int {
 	var fault *soap.SOAPFaultError
@@ -462,10 +530,19 @@ func friendlyError(err error) string {
 
 	var fault *soap.SOAPFaultError
 	if errors.As(err, &fault) {
+		// 路由器的原始描述往往直接说明被拒的参数（如 LeaseDuration、
+		// InternalClient），务必保留，否则 402 只剩一句"参数错误"无从排查。
+		desc := strings.TrimSpace(fault.Detail.UPnPError.ErrorDescription)
+		if match := upnpCodePattern.FindStringSubmatch(string(fault.Detail.Raw)); len(match) == 2 && desc == "" {
+			desc = strings.TrimSpace(extractXMLTag(string(fault.Detail.Raw), "errorDescription"))
+		}
 		if text, ok := upnpErrorText[upnpErrorCode(err)]; ok {
+			if desc != "" && desc != text {
+				return text + "：" + desc
+			}
 			return text
 		}
-		if desc := strings.TrimSpace(fault.Detail.UPnPError.ErrorDescription); desc != "" {
+		if desc != "" {
 			return "路由器拒绝操作：" + desc
 		}
 		return "路由器返回错误：" + fault.FaultString

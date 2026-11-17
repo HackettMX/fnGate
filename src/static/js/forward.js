@@ -53,7 +53,12 @@
           internal_client: mask.querySelector('#f-ip').value.trim(),
           lease_time: parseInt(mask.querySelector('#f-lease').value, 10)
         };
-        await FG.api('api/forward/mappings', { method: 'POST', body: payload });
+        try {
+          await FG.api('api/forward/mappings', { method: 'POST', body: payload });
+        } catch (err) {
+          FG.fieldError(mask, err.message || '添加失败，请检查路由器 UPnP 设置');
+          return false; // 保留弹窗让用户改参数，且不弹 toast 刷屏
+        }
         FG.toast('映射已添加', 'ok');
         FG.refresh();
       }
