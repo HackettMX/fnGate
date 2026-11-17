@@ -429,6 +429,20 @@ func (m *UPnPManager) GetSpecific(ctx context.Context, externalPort int, protoco
 	return &entry, nil
 }
 
+// explainInternalClient 针对 402 + 非本机 InternalClient 补充解释。
+// 家用路由器 UPnP 普遍只允许把端口映射到发起请求的设备自身，拒绝替
+// 局域网内其他设备开洞。这是固件安全限制，换 RemoteHost/租期绕不过。
+// local 由调用方注入便于单测；为空或 client==local 时原样返回。
+func explainInternalClient(err error, client, local string) error {
+	if upnpErrorCode(err) != 402 || client == "" || local == "" || strings.EqualFold(client, local) {
+		return err
+	}
+	return fmt.Errorf("%s。注意：内部 IP %s 不是本机地址（本机 %s）。多数家用路由器的 UPnP 只允许把端口映射到发起请求的设备自身，"+
+		"不允许替局域网内其他设备开洞，这是路由器的安全限制，换端口或租期都无法绕过。"+
+		"要让 %s 上的服务对外可访问，请改用「反向代理」新建一条指向 %s 的 TCP 入口后映射本机端口，或在路由器管理页手动添加端口转发。",
+		friendlyError(err), client, local, client, client)
+}
+
 // AddMapping 在路由器上新增（或覆盖）一条端口映射。
 func (m *UPnPManager) AddMapping(ctx context.Context, externalPort int, protocol string, internalPort int, internalClient, description string, leaseTime int) error {
 	m.mu.Lock()
@@ -440,7 +454,7 @@ func (m *UPnPManager) AddMapping(ctx context.Context, externalPort int, protocol
 	callCtx, cancel := context.WithTimeout(ctx, soapTimeout)
 	defer cancel()
 	if err := m.conn.addPortMapping(callCtx, uint16(externalPort), protocol, uint16(internalPort), internalClient, description, uint32(leaseTime)); err != nil {
-		return errors.New(friendlyError(err))
+		return explainInternalClient(err, internalClient, detectLANIP())
 	}
 	return nil
 }
@@ -568,17 +582,44 @@ func friendlyError(err error) string {
 	return "操作失败：" + message
 }
 
-// detectLANIP 通过 UDP 探测本机局域网 IP（不会真正发包）。
+// detectLANIP 探测本机局域网 IP。
+// 不能只用 UDP connect：NAS 上 Clash/Surge 的 fake-ip 会把出口地址改写成
+// 198.18.x.x，导致误判"填了非本机 IP"。因此优先枚举真实网卡：
+// 取第一个私网 IPv4（排除回环、link-local 与 fake-ip 段），UDP 仅作兜底。
 func detectLANIP() string {
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipNet.IP.To4()
+			if ip == nil || !ip.IsPrivate() || isFakeLANIP(ip) {
+				continue
+			}
+			return ip.String()
+		}
+	}
 	conn, err := net.Dial("udp", "223.5.5.5:53")
 	if err != nil {
 		return ""
 	}
 	defer func() { _ = conn.Close() }()
-	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && !isFakeLANIP(addr.IP) {
 		return addr.IP.String()
 	}
 	return ""
+}
+
+// isFakeLANIP 与 acme.isHijackedIP 同口径，识别 fake-ip 占用的测试保留段。
+func isFakeLANIP(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil && v4[0] == 198 && (v4[1] == 18 || v4[1] == 19) {
+		return true
+	}
+	return false
 }
 
 // randomID 生成 12 位十六进制随机标识。

@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"net"
 	"strings"
 	"testing"
 
@@ -112,5 +113,52 @@ func TestTryPortMappingVariantsAllFail(t *testing.T) {
 	}
 	if attempts != 4 {
 		t.Fatalf("应尝试全部 4 组，实际 %d 次", attempts)
+	}
+}
+
+func TestExplainInternalClient(t *testing.T) {
+	f402 := soapFault(402)
+
+	// 非本机 IP + 402：必须给出可操作解释，指明本机地址与绕过方式。
+	got := explainInternalClient(f402, "192.168.10.113", "192.168.10.10")
+	msg := got.Error()
+	for _, want := range []string{"不是本机", "192.168.10.10", "192.168.10.113", "反向代理"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("解释里应包含 %q，实际：%s", want, msg)
+		}
+	}
+
+	// 本机 IP：不改写，保持原有简短错误。
+	if got := explainInternalClient(f402, "192.168.10.10", "192.168.10.10"); got != f402 {
+		t.Fatalf("本机 IP 不应改写错误，实际：%v", got)
+	}
+
+	// 非 402（如端口冲突）：不改写，避免误判。
+	if got := explainInternalClient(soapFault(718), "192.168.10.113", "192.168.10.10"); got != nil {
+		if strings.Contains(got.Error(), "反向代理") {
+			t.Fatalf("非 402 不应套用 InternalClient 解释，实际：%v", got)
+		}
+	}
+
+	// 拿不到本机 IP：不改写，避免给出错误推断。
+	if got := explainInternalClient(f402, "192.168.10.113", ""); got != f402 {
+		t.Fatalf("本机 IP 未知时不应改写，实际：%v", got)
+	}
+}
+
+func TestIsFakeLANIP(t *testing.T) {
+	cases := map[string]bool{
+		"192.168.10.10": false,
+		"10.0.0.5":      false,
+		"198.18.0.1":    true,
+		"198.19.255.1":  true,
+		"127.0.0.1":     true,
+		"0.0.0.0":       true,
+		"8.8.8.8":       false,
+	}
+	for in, want := range cases {
+		if got := isFakeLANIP(net.ParseIP(in)); got != want {
+			t.Fatalf("isFakeLANIP(%s) = %v，期望 %v", in, got, want)
+		}
 	}
 }

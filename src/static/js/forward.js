@@ -15,7 +15,11 @@
       '<span class="stat-sub">' + FG.esc(sub || '') + '</span></div></div>';
   }
 
-  function openAdd() {
+  function openAdd(localIP) {
+    var localHint = localIP
+      ? '<div class="hint">本机局域网 IP：<b class="mono">' + FG.esc(localIP) + '</b>。' +
+        '路由器通常<b>只允许映射到本机</b>，填其他设备的 IP 会被拒绝。</div>'
+      : '<div class="hint">留空将自动使用本机 IP。路由器通常只允许映射到本机。</div>';
     FG.modal({
       title: '添加端口映射',
       submitText: '确认添加',
@@ -26,7 +30,8 @@
         '<button type="button" class="seg-item" data-value="UDP">UDP</button></div></div>' +
         '<div class="field"><label for="f-ext">外部端口（必填）</label><input type="number" id="f-ext" min="1" max="65535" placeholder="1-65535" /></div>' +
         '<div class="field"><label for="f-int">内部端口（必填）</label><input type="number" id="f-int" min="1" max="65535" placeholder="1-65535" /></div>' +
-        '<div class="field"><label for="f-ip">内部 IP（选填，默认本机）</label><input type="text" id="f-ip" placeholder="自动检测" /></div>' +
+        '<div class="field full"><label for="f-ip">内部 IP（选填，默认本机）</label><input type="text" id="f-ip" placeholder="' +
+        FG.esc(localIP || '自动检测') + '" />' + localHint + '</div>' +
         '<div class="field"><label for="f-lease">租期</label><select id="f-lease">' +
         '<option value="0">永久</option><option value="3600">1 小时</option><option value="43200">12 小时</option>' +
         '<option value="86400">24 小时</option><option value="604800">7 天</option></select></div>' +
@@ -46,11 +51,18 @@
           FG.fieldError(mask, '请填写合法的外部端口与内部端口（1-65535）');
           return false;
         }
+        var client = mask.querySelector('#f-ip').value.trim();
+        if (client && localIP && client !== localIP) {
+          if (!await FG.confirmBox(
+            '你填的内部 IP ' + client + ' 不是本机（' + localIP + '）。多数路由器只允许映射到本机，这一条大概率会失败。\n\n' +
+            '要给局域网其他设备开端口，建议改用「反向代理」转发，或在路由器里手动设置端口转发。仍要继续吗？',
+            '内部 IP 不是本机')) return false;
+        }
         var payload = {
           description: mask.querySelector('#f-desc').value.trim(),
           protocol: mask.querySelector('#f-proto .seg-item.active').getAttribute('data-value'),
           external_port: ext, internal_port: int,
-          internal_client: mask.querySelector('#f-ip').value.trim(),
+          internal_client: client,
           lease_time: parseInt(mask.querySelector('#f-lease').value, 10)
         };
         try {
@@ -144,7 +156,7 @@
         var t = e.target;
         var act = t.getAttribute && t.getAttribute('data-act');
         try {
-          if (act === 'add') { openAdd(); }
+          if (act === 'add') { openAdd(s.local_ip); }
           else if (act === 'discover') { await FG.api('api/forward/discover', { method: 'POST' }); FG.toast('已重新发现网关', 'ok'); FG.refresh(); }
           else if (act === 'reapply') {
             var r = await FG.api('api/forward/reapply', { method: 'POST' });

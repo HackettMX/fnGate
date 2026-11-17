@@ -38,6 +38,7 @@ type Snapshot struct {
 type StatusView struct {
 	Connected    bool   `json:"connected"`
 	ExternalIP   string `json:"external_ip"`
+	LocalIP      string `json:"local_ip"`
 	Gateway      string `json:"gateway"`
 	GatewayIP    string `json:"gateway_ip"`
 	Error        string `json:"error,omitempty"`
@@ -188,6 +189,7 @@ func (m *Manager) Status(force bool) StatusView {
 	st := m.store.Snapshot()
 	view := StatusView{
 		Connected: gw.Connected, ExternalIP: gw.ExternalIP,
+		LocalIP: detectLANIP(),
 		Gateway: gw.ModelName, GatewayIP: gw.GatewayIP, Error: gw.Error,
 		Managed: len(st.Forwards), PausedReason: m.paused, LastReapply: m.lastReapplyText,
 	}
