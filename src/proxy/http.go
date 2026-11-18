@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -19,14 +22,60 @@ type proxyEntry struct {
 	backend Backend
 }
 
+// statusRecorder 只记录状态码，其余接口必须原样透传。
+// 尤其 Hijacker：WebSocket 握手靠它接管底层 TCP 连接，一旦被包装层吞掉，
+// httputil.ReverseProxy 就会报 "can't switch protocols using non-Hijacker"，
+// 返回 502（表现为前端 WebSocket 握手失败）。Flusher/Pusher/ReaderFrom
+// 同为可选接口，缺一个就会让对应的流式/HTTP2/零拷贝能力静默退化。
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
+	if r.status != 0 {
+		return
+	}
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	if r.status == 0 {
+		r.status = http.StatusSwitchingProtocols
+	}
+	return h.Hijack()
+}
+
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := r.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(struct{ io.Writer }{r}, src)
 }
 
 func routeSignature(r core.Route) string {
@@ -106,7 +155,15 @@ func (m *Manager) getProxy(r core.Route, incoming string) (*proxyEntry, error) {
 			m.log.Warn("转发到 %s 失败: %v", bd.URL(), err)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprintf(w, "fnGate: 无法连接后端 %s\n%v\n", bd.URL(), err)
+			// 区分"连不上后端"与"后端已连上但转发失败"，否则协议切换等
+			// 真实错误被统一写成"无法连接后端"，把排查引向网络方向。
+			var netErr net.Error
+			if errors.As(err, &netErr) || strings.Contains(err.Error(), "connection refused") ||
+				strings.Contains(err.Error(), "no such host") || strings.Contains(err.Error(), "timeout") {
+				_, _ = fmt.Fprintf(w, "fnGate: 无法连接后端 %s\n%v\n", bd.URL(), err)
+				return
+			}
+			_, _ = fmt.Fprintf(w, "fnGate: 转发到 %s 失败\n%v\n", bd.URL(), err)
 		},
 	}
 	entry := &proxyEntry{rp: rp, backend: bd}

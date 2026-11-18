@@ -1,13 +1,19 @@
 package proxy
 
 import (
+	"bufio"
+	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"fngate/core"
 )
@@ -211,4 +217,107 @@ func TestHTTPProxyEndToEnd(t *testing.T) {
 	if seenForwarded == "" || resp.Header.Get("X-Backend") != "yes" {
 		t.Error("转发头或响应头丢失")
 	}
+}
+
+// 回归：WebSocket 握手必须能穿过 fnGate 反代。
+// 根因是 statusRecorder 包装 ResponseWriter 后吞掉了 Hijacker，
+// 导致 httputil.ReverseProxy 报 "can't switch protocols using non-Hijacker"。
+// 后端手动完成 101 握手并回一帧文本；客户端解析 101 与首帧后断开。
+func TestWebSocketProxyEndToEnd(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.Error(w, "expected upgrade", http.StatusBadRequest)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "backend not hijacker", http.StatusInternalServerError)
+			return
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// 按客户端 key 回标准 accept（固定 key 的已知结果）。
+		key := r.Header.Get("Sec-WebSocket-Key")
+		accept := wsAccept(key)
+		_, _ = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\n"+
+			"Upgrade: websocket\r\nConnection: Upgrade\r\n"+
+			"Sec-WebSocket-Accept: %s\r\n\r\n", accept)
+		_ = rw.Flush()
+		// 服务端→客户端的单帧文本 "hi"（未掩码，符合 RFC 6455）。
+		_, _ = rw.Write([]byte{0x81, 0x02, 'h', 'i'})
+		_ = rw.Flush()
+	}))
+	defer backend.Close()
+	u, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t)
+	const lid = "listener-ws"
+	if err := m.store.Update(func(s *core.State) error {
+		s.Listeners = append(s.Listeners, core.Listener{
+			ID: lid, Name: "ws", Port: 0, Protocol: "http", Bind: "127.0.0.1", Enabled: true,
+		})
+		s.Routes = append(s.Routes, core.Route{
+			ID: "r-ws", ListenerID: lid, Name: "ws", MatchType: "prefix",
+			Backend: u.Host, Websocket: true, TimeoutMS: 5000, Enabled: true,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	states := m.Apply()
+	if len(states) != 1 || !states[0].Active {
+		t.Fatalf("入口启动失败: %+v", states)
+	}
+	m.mu.RLock()
+	rt := m.runtimes[lid]
+	m.mu.RUnlock()
+
+	conn, err := net.DialTimeout("tcp", rt.ln.Addr().String(), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	key := "dGhlIHNhbXBsZSBub25jZQ=="
+	_, _ = fmt.Fprintf(conn, "GET /api/notifications/ws HTTP/1.1\r\n"+
+		"Host: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n", rt.ln.Addr().String(), key)
+
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("未读到握手响应: %v", err)
+	}
+	if !strings.Contains(line, "101") {
+		// 读完整错误体便于诊断。
+		rest, _ := io.ReadAll(br)
+		t.Fatalf("WebSocket 握手应返回 101，实际 %q；%s", strings.TrimSpace(line), rest)
+	}
+	// 跳到空行，再读一帧。
+	for {
+		l, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if l == "\r\n" || l == "\n" {
+			break
+		}
+	}
+	frame := make([]byte, 4)
+	if _, err := io.ReadFull(br, frame); err != nil {
+		t.Fatalf("未读到回显帧: %v", err)
+	}
+	if frame[0] != 0x81 || frame[1] != 0x02 || string(frame[2:4]) != "hi" {
+		t.Fatalf("回显帧异常: %v", frame)
+	}
+}
+
+func wsAccept(key string) string {
+	h := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(h[:])
 }
