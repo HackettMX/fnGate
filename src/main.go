@@ -192,7 +192,16 @@ func runDeployer(args []string) {
 	}
 	srv := deployer.NewServer(*socket, *runDir, *gid)
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.Start() }()
+	go func() {
+		// 守护里的任何 panic 都会让进程直接消失，界面上只剩「部署服务未连接」。
+		// 这里兜底转成一条可读的退出原因，写进日志供诊断使用。
+		defer func() {
+			if r := recover(); r != nil {
+				errCh <- fmt.Errorf("内部错误（%v）", r)
+			}
+		}()
+		errCh <- srv.Start()
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

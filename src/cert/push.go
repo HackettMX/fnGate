@@ -132,10 +132,17 @@ func (c *pushClient) Deploy(ctx context.Context, in deployer.PrepareInput) (*dep
 	return &out, nil
 }
 
-// deployAvailable 快速探测守护是否在线。
-func (c *pushClient) deployAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+// probe 探测守护是否在线，并保留失败原因（用于界面诊断）。
+func (c *pushClient) probe(ctx context.Context) error {
 	_, err := c.Status(ctx)
-	return err == nil
+	return err
+}
+
+// Repair 请求守护归档「上次同步未完成」的残留记录。
+func (c *pushClient) Repair(ctx context.Context) (*deployer.RepairResult, error) {
+	var out deployer.RepairResult
+	if err := c.callT(ctx, 120*time.Second, "/repair", struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

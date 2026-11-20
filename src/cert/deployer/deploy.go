@@ -12,6 +12,9 @@ import (
 
 // Deploy 执行完整部署事务。成功返回验证结果；失败自动回滚并验证旧证书 HTTPS。
 func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error) {
+	if err := e.recoveryGuard(); err != nil {
+		return nil, err
+	}
 	if err := e.beginDeploy(running); err != nil {
 		return nil, err
 	}
@@ -43,7 +46,8 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 	}
 	active := e.journalPath()
 	if _, err := os.Lstat(active); err == nil {
-		return nil, fail(CodeRecovery)
+		return nil, failDetail(CodeRecovery, "journal",
+			"上一次同步的记录尚未清理（"+active+"），为避免叠加写入已停止；请点「修复部署服务」后再同步")
 	}
 
 	// 1. 持久记录事务后再做任何修改。此时尚未产生副作用，失败直接返回。
@@ -415,8 +419,17 @@ func (e *Engine) writeJournal(j *journal) error {
 
 // Recover 启动时从 active.json 恢复：未提交则回滚，已提交则归档。
 func (e *Engine) Recover() error {
+	err := e.recoverOnce()
+	if err != nil {
+		e.setRecovery(err)
+		return err
+	}
+	e.clearRecovery()
+	return nil
+}
+
+func (e *Engine) recoverOnce() error {
 	if err := e.ensureStateDir(); err != nil {
-		e.recoveryFailed = true
 		return err
 	}
 	raw, err := os.ReadFile(e.journalPath())
@@ -424,23 +437,110 @@ func (e *Engine) Recover() error {
 		return nil
 	}
 	if err != nil {
-		e.recoveryFailed = true
-		return fail(CodeRecovery)
+		return failDetail(CodeRecovery, "journal",
+			fmt.Sprintf("无法读取未完成同步的记录 %s：%v", e.journalPath(), err))
 	}
 	var j journal
 	if json.Unmarshal(raw, &j) != nil {
-		e.recoveryFailed = true
-		return fail(CodeRecovery)
+		return failDetail(CodeRecovery, "journal",
+			fmt.Sprintf("未完成同步的记录 %s 已损坏（%d 字节），无法自动回滚", e.journalPath(), len(raw)))
 	}
 	if !j.Committed {
 		if err := e.rollback(&j); err != nil {
-			e.recoveryFailed = true
-			return fail(CodeRecovery)
+			return failDetail(CodeRecovery, "rollback", e.describeJournal(j, err))
 		}
 	}
 	_ = os.Rename(e.journalPath(), filepath.Join(e.StateDir, "recovered-"+newUUID()+".json"))
 	e.pruneBackups()
 	return nil
+}
+
+// describeJournal 把「回滚为什么失败」讲成人能读的一句话，
+// 因为这条字符串会直接出现在界面的「未就绪」提示里。
+func (e *Engine) describeJournal(j journal, cause error) string {
+	stage := j.Failure
+	if stage != nil && stage.Stage != "" {
+		return fmt.Sprintf("上次同步在「%s」阶段被中断（错误码 %s），自动回滚未能完成：%s",
+			stageText(stage.Stage), stage.Code, textOf(cause))
+	}
+	return "上次同步在执行中被中断，自动回滚未能完成：" + textOf(cause)
+}
+
+// textOf 优先取诊断细节，没有则取错误文案。
+func textOf(err error) string {
+	if d := detailOf(err); d != "" {
+		return d
+	}
+	if err == nil {
+		return "未知原因"
+	}
+	return err.Error()
+}
+
+// setRecovery / clearRecovery 维护恢复状态（/status 与部署前的守卫都读它）。
+func (e *Engine) setRecovery(err error) {
+	mu.Lock()
+	e.recoveryFailed = true
+	e.recoveryErr = textOf(err)
+	mu.Unlock()
+}
+
+func (e *Engine) clearRecovery() {
+	mu.Lock()
+	e.recoveryFailed = false
+	e.recoveryErr = ""
+	mu.Unlock()
+}
+
+func (e *Engine) recoveryState() (bool, string) {
+	mu.Lock()
+	defer mu.Unlock()
+	return e.recoveryFailed, e.recoveryErr
+}
+
+// recoveryGuard 在预检/部署前拦下「上次同步没收拾干净」的状态。
+func (e *Engine) recoveryGuard() error {
+	failed, msg := e.recoveryState()
+	if !failed {
+		return nil
+	}
+	if msg == "" {
+		msg = "上次同步未完成，自动回滚没有成功"
+	}
+	return failDetail(CodeRecovery, "recovery", msg+
+		"；请点「修复部署服务」归档这次记录后再同步，并在飞牛「系统设置 → 安全性 → 证书」确认当前系统证书")
+}
+
+// Repair 处理「上次同步中断且自动回滚失败」的残留记录。
+// 先重试一次回滚；仍失败（通常是系统证书已被别的程序改写）则归档记录，
+// 让部署服务恢复可用——否则守护每次启动都会失败，功能永久不可用。
+// 归档只动本应用自己的状态目录，不改系统证书。
+func (e *Engine) Repair() (*RepairResult, error) {
+	if busy, _, _ := e.runningInfo(); busy {
+		return nil, fail(CodeBusy)
+	}
+	// 没有残留记录时，「修复」必须是无害的：只清标记并如实说明。
+	if _, statErr := os.Lstat(e.journalPath()); os.IsNotExist(statErr) {
+		e.clearRecovery()
+		return &RepairResult{Repaired: true,
+			Message: "当前没有未完成的同步记录，部署服务可用，请重新预检同步"}, nil
+	}
+	if err := e.Recover(); err == nil {
+		return &RepairResult{Repaired: true,
+			Message: "已自动回滚上次未完成的同步，部署服务现在可用，可以重新预检"}, nil
+	} else {
+		reason := textOf(err)
+		archive := filepath.Join(e.StateDir, "abandoned-"+newUUID()+".json")
+		if rerr := os.Rename(e.journalPath(), archive); rerr != nil && !os.IsNotExist(rerr) {
+			return nil, failDetail(CodeRecovery, "repair",
+				"无法归档未完成的部署记录（"+rerr.Error()+"）："+reason)
+		}
+		e.pruneBackups()
+		e.clearRecovery()
+		return &RepairResult{Repaired: true,
+			Message: "已放弃这次无法自动回滚的记录（保留为 " + filepath.Base(archive) + "）。原因：" +
+				reason + "。请在飞牛「系统设置 → 安全性 → 证书」确认系统当前证书后，再重新预检同步"}, nil
+	}
 }
 
 type backupFile struct {
@@ -456,13 +556,20 @@ func (e *Engine) pruneBackups() {
 	list := []backupFile{}
 	for _, en := range entries {
 		n := en.Name()
-		if strings.HasPrefix(n, "backup-") || strings.HasPrefix(n, "rolled-back-") || strings.HasPrefix(n, "recovered-") {
+		if strings.HasPrefix(n, "backup-") || strings.HasPrefix(n, "rolled-back-") ||
+			strings.HasPrefix(n, "recovered-") || strings.HasPrefix(n, "abandoned-") {
 			if info, err := en.Info(); err == nil {
 				list = append(list, backupFile{n, info.ModTime()})
 			}
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].mod.After(list[j].mod) })
+	// 只保留最近 10 份。注意：不足 10 份时不能直接切片，
+	// 否则 list[10:] 会越界 panic——守护在启动恢复后调用本函数，
+	// panic 会让进程直接退出，界面就只剩「部署服务未连接」。
+	if len(list) <= 10 {
+		return
+	}
 	for _, x := range list[10:] {
 		_ = os.Remove(filepath.Join(e.StateDir, x.name))
 	}

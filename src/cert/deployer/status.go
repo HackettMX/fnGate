@@ -482,23 +482,36 @@ func (e *Engine) Status() (*StatusResult, error) {
 	}
 	sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	running, runStage, runSecs := e.runningInfo()
+	recFailed, recErr := e.recoveryState()
+	if recFailed {
+		// 恢复失败要放在诊断最前面：它决定了目标列表是否可信。
+		diagnostics = append([]string{"上次同步未完成且自动回滚失败：" + recErr +
+			"（可点「修复部署服务」归档该记录）"}, diagnostics...)
+	}
 	return &StatusResult{
 		Available: true, Experimental: true,
 		Targets: available, Unavailable: unavailable,
 		Skipped: len(unavailable), Running: running,
 		RunningStage: runStage, RunningFor: runSecs,
 		Ports: ports, Diagnostics: diagnostics,
+		RecoveryFailed: recFailed, RecoveryError: recErr,
 	}, nil
 }
 
 // stateDir 辅助：确保状态目录为 0700 且属主安全。
+// Secure=false 时只检查目录存在（单元测试环境不是 root）。
 func (e *Engine) ensureStateDir() error {
 	if err := os.MkdirAll(e.StateDir, 0o700); err != nil {
-		return fail(CodeIncompatible)
+		return failDetail(CodeIncompatible, "state-dir",
+			fmt.Sprintf("无法创建部署状态目录 %s：%v", e.StateDir, err))
 	}
 	st, err := os.Lstat(e.StateDir)
-	if err != nil || !st.IsDir() || !ownedByRootNotWritable(st) {
-		return fail(CodeIncompatible)
+	if err != nil || !st.IsDir() {
+		return failDetail(CodeIncompatible, "state-dir", fmt.Sprintf("部署状态目录 %s 不可用", e.StateDir))
+	}
+	if e.Secure && !ownedByRootNotWritable(st) {
+		return failDetail(CodeIncompatible, "state-dir",
+			fmt.Sprintf("部署状态目录 %s 必须属主 root 且不可被组/其他写（当前权限 %s）", e.StateDir, st.Mode().Perm()))
 	}
 	return nil
 }

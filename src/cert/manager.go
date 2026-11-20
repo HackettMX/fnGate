@@ -14,13 +14,13 @@ import (
 
 // Options 是证书模块的运行依赖。
 type Options struct {
-	DataDir       string
-	CertsDir      string
-	SecretsDir    string
+	DataDir        string
+	CertsDir       string
+	SecretsDir     string
 	DeployerSocket string // root 部署守护的 Unix Socket；为空用默认路径
-	Store         *core.Store
-	Bus           *core.EventBus
-	Logger        *core.Logger
+	Store          *core.Store
+	Bus            *core.EventBus
+	Logger         *core.Logger
 }
 
 type cachedCert struct {

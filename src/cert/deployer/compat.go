@@ -18,6 +18,10 @@ type Engine struct {
 	busyStage      string
 	busySince      time.Time
 	recoveryFailed bool
+	// recoveryErr 是上次启动时崩溃恢复失败的原因。守护不会因此退出
+	// （退出后主应用只能看到「部署服务未连接」，反而更无从排查），
+	// 而是把它交给 /status，由界面说明发生了什么、并允许一键修复。
+	recoveryErr string
 }
 
 // NewEngine 创建默认引擎（生产路径）。

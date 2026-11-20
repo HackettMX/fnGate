@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -38,9 +39,11 @@ func (s *Server) Start() error {
 	if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 || !ownedByRootNotWritable(st) {
 		return errors.New("unsafe helper run directory")
 	}
-	// 启动时先做崩溃恢复。
+	// 启动时先做崩溃恢复。恢复失败**不退出**：一退出，主应用只会看到
+	// 「部署服务未连接」，既看不到原因也没有处置办法。改为带病监听，
+	// 由 /status 说明情况、/repair 提供一键归档，/deploy 在此之前拒绝执行。
 	if err := s.engine.Recover(); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "cert-deployer: 崩溃恢复未完成：%v（已带病启动，可用 /repair 处理）\n", err)
 	}
 	// 清理旧 socket（必须是 root 的 socket 文件）。
 	if old, err := os.Lstat(s.socket); err == nil {
@@ -66,6 +69,7 @@ func (s *Server) Start() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/repair", s.handleRepair)
 	mux.HandleFunc("/prepare", s.handlePrepare)
 	mux.HandleFunc("/deploy", s.handleDeploy)
 	s.httpSrv = &http.Server{
@@ -136,6 +140,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.engine.Status()
+	if err != nil {
+		s.replyErr(w, err)
+		return
+	}
+	s.reply(w, 200, res)
+}
+
+// handleRepair 归档「上次同步中断且无法自动回滚」的残留记录。
+// 只动本应用自己的状态目录，不改系统证书；是否需要人工确认由结果文案说明。
+func (s *Server) handleRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	res, err := s.engine.Repair()
 	if err != nil {
 		s.replyErr(w, err)
 		return

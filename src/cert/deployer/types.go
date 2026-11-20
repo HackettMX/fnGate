@@ -156,7 +156,14 @@ type StatusResult struct {
 	RunningFor     int      `json:"running_for,omitempty"`
 	Ports          []int    `json:"ports,omitempty"`
 	RecoveryFailed bool     `json:"recovery_failed,omitempty"`
+	RecoveryError  string   `json:"recovery_error,omitempty"`
 	Diagnostics    []string `json:"diagnostics,omitempty"`
+}
+
+// RepairResult 是 /repair 的响应：说明这次修复做了什么，以及用户下一步该确认什么。
+type RepairResult struct {
+	Repaired bool   `json:"repaired"`
+	Message  string `json:"message"`
 }
 
 // PrepareInput 是 /prepare 与 /deploy 共享的输入。

@@ -24,19 +24,22 @@ type FNOSOverview struct {
 	Running     bool              `json:"running"`
 	RunStage    string            `json:"running_stage,omitempty"`
 	RunFor      int               `json:"running_for,omitempty"`
-	Diagnostics []string          `json:"diagnostics"`
+	// 守护带病运行（上次同步中断且自动回滚失败）时置位，前端据此显示「修复部署服务」。
+	RecoveryFailed bool     `json:"recovery_failed,omitempty"`
+	RecoveryError  string   `json:"recovery_error,omitempty"`
+	Diagnostics    []string `json:"diagnostics"`
 }
 
 type FNOSCertStatus struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Status        string `json:"status"` // none | deployed | stale | error
-	TargetID      string `json:"target_id,omitempty"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Status        string   `json:"status"` // none | deployed | stale | error
+	TargetID      string   `json:"target_id,omitempty"`
 	TargetDomains []string `json:"target_domains,omitempty"`
-	Fingerprint   string `json:"fingerprint,omitempty"`
-	LastDeployAt  string `json:"last_deploy_at,omitempty"`
-	LastError     string `json:"last_error,omitempty"`
-	AutoDeploy    bool   `json:"auto_deploy"`
+	Fingerprint   string   `json:"fingerprint,omitempty"`
+	LastDeployAt  string   `json:"last_deploy_at,omitempty"`
+	LastError     string   `json:"last_error,omitempty"`
+	AutoDeploy    bool     `json:"auto_deploy"`
 }
 
 // FNOSStatus 返回守护状态与每张证书的同步状态。守护离线时仍返回证书状态，
@@ -46,26 +49,34 @@ func (m *Manager) FNOSStatus(ctx context.Context) (*FNOSOverview, error) {
 		Targets: []deployer.Target{}, Unavailable: []deployer.Target{},
 		Certs: []FNOSCertStatus{}, Diagnostics: []string{}, Ports: []int{},
 	}
-	if m.pushClient.deployAvailable() {
-		res, err := m.pushClient.Status(ctx)
-		if err == nil {
-			ov.Available = true
-			ov.DaemonReady = true
-			ov.Targets = res.Targets
-			ov.Unavailable = res.Unavailable
-			ov.Diagnostics = res.Diagnostics
-			ov.Running = res.Running
-			ov.RunStage = res.RunningStage
-			ov.RunFor = res.RunningFor
-			if len(res.Ports) > 0 {
-				ov.Ports = res.Ports
-			}
+	res, err := m.pushClient.Status(ctx)
+	if err == nil {
+		ov.Available = true
+		ov.DaemonReady = true
+		ov.Targets = res.Targets
+		ov.Unavailable = res.Unavailable
+		ov.Diagnostics = res.Diagnostics
+		ov.Running = res.Running
+		ov.RunStage = res.RunningStage
+		ov.RunFor = res.RunningFor
+		ov.RecoveryFailed = res.RecoveryFailed
+		ov.RecoveryError = res.RecoveryError
+		if len(res.Ports) > 0 {
+			ov.Ports = res.Ports
 		}
+	} else {
+		// 守护不可用时，把「为什么连不上」变成可读事实，而不是一句「未就绪」。
+		ov.Diagnostics = m.daemonFacts(err)
 	}
 	for _, c := range m.opt.Store.Snapshot().Certificates {
 		ov.Certs = append(ov.Certs, fnosCertStatus(c))
 	}
 	return ov, nil
+}
+
+// FNOSRepair 请守护归档「上次同步未完成」的残留记录，使同步功能恢复可用。
+func (m *Manager) FNOSRepair(ctx context.Context) (*deployer.RepairResult, error) {
+	return m.pushClient.Repair(ctx)
 }
 
 func fnosCertStatus(c core.Certificate) FNOSCertStatus {

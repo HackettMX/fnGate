@@ -29,6 +29,7 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("POST /fnos/deploy", a.fnosDeploy)
 	mux.HandleFunc("POST /fnos/auto", a.fnosAuto)
 	mux.HandleFunc("POST /fnos/reset", a.fnosReset)
+	mux.HandleFunc("POST /fnos/repair", a.fnosRepair)
 	mux.HandleFunc("POST /default", a.setDefault)
 	mux.HandleFunc("GET /{id}", a.detail)
 	mux.HandleFunc("GET /{id}/references", a.references)
@@ -160,6 +161,17 @@ func (a *API) fnosStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api.WriteOK(w, ov)
+}
+
+// fnosRepair 归档「上次同步中断且自动回滚失败」的残留记录，让同步功能恢复可用。
+func (a *API) fnosRepair(w http.ResponseWriter, r *http.Request) {
+	res, err := a.m.FNOSRepair(r.Context())
+	if err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	a.m.Bus().Publish("cert", "info", "部署服务修复：%s", res.Message)
+	api.WriteOK(w, res)
 }
 
 type fnosPreparePayload struct {
@@ -425,7 +437,8 @@ type updatePayload struct {
 	AutoRenew *bool  `json:"auto_renew"`
 }
 
-func (a *API) update(w http.ResponseWriter, r *http.Request) {	id := r.PathValue("id")
+func (a *API) update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	var p updatePayload
 	if err := api.DecodeJSON(r, &p); err != nil {
 		api.WriteErr(w, http.StatusBadRequest, "%v", err)

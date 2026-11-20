@@ -198,6 +198,7 @@
   // 生成可复制的真机诊断文本（不含任何私钥内容）。
   function fnosDiagText() {
     var lines = ['fnGate 飞牛系统 HTTPS 同步诊断', '部署服务在线：' + (fnosData.available ? '是' : '否')];
+    if (fnosData.recovery_failed) lines.push('部署服务状态：需修复（' + (fnosData.recovery_error || '上次同步未完成') + '）');
     (fnosData.diagnostics || []).forEach(function (d) { lines.push('· ' + d); });
     lines.push('可替换目标：' + (fnosData.targets || []).length);
     (fnosData.targets || []).forEach(function (t) {
@@ -446,6 +447,14 @@
         html += '<div class="notice danger"><span class="notice-icon">!</span><div class="notice-body"><strong>证书申请失败</strong>' +
           failing.slice(0, 3).map(function (o) { return '<p>· ' + FG.esc(o.name || o.id) + '：' + FG.esc(o.error || '') + '</p>'; }).join('') + '</div></div>';
       }
+      if (fnosData.recovery_failed) {
+        html += '<div class="notice danger"><span class="notice-icon">!</span><div class="notice-body">' +
+          '<strong>上次同步未完成，部署服务需要修复</strong>' +
+          '<p>' + FG.esc(fnosData.recovery_error || '自动回滚没有成功，已停止后续写入') + '</p>' +
+          '<p class="hint">修复会归档这次失败的记录（保留在本机状态目录，不改动飞牛系统证书），完成后即可重新同步。' +
+          '请在飞牛「系统设置 → 安全性 → 证书」确认当前系统证书是你期望的那张。</p>' +
+          '<button type="button" class="btn btn-primary" data-act="fnos-repair">修复部署服务</button></div></div>';
+      }
       if (fnosData.available) {
         var okN = (fnosData.targets || []).length;
         var skip = fnosData.unavailable_targets || [];
@@ -465,8 +474,18 @@
             '<button type="button" class="btn" data-act="fnos-diag">复制诊断信息</button></div></div>';
         }
       } else {
-        html += '<div class="notice"><span class="notice-icon">!</span><div class="notice-body">' +
-          '<strong>飞牛系统 HTTPS 同步未就绪</strong><p>受限部署服务未连接，重启应用后重试；证书申请、上传与反向代理不受影响。</p></div></div>';
+        var facts = (fnosData.diagnostics || []).map(function (d) {
+          return /^  /.test(d) ? '<p class="muted" style="font:12px/1.7 monospace;margin:2px 0">' + FG.esc(d) + '</p>'
+            : '<p>' + FG.esc(d) + '</p>';
+        }).join('');
+        html += '<div class="notice danger"><span class="notice-icon">!</span><div class="notice-body">' +
+          '<strong>飞牛系统 HTTPS 同步未就绪</strong>' +
+          '<p>受限部署服务未连接。证书申请、上传与反向代理不受影响。</p>' +
+          (facts || '<p class="muted">未取到诊断信息，请点「重新检测」或重启应用后再试。</p>') +
+          '<div style="margin-top:10px">' +
+          '<button type="button" class="btn" data-act="fnos-recheck">重新检测</button> ' +
+          '<button type="button" class="btn" data-act="fnos-diag">复制诊断信息</button>' +
+          '</div></div></div>';
       }
 
       html += '<section class="panel"><div class="panel-head"><div><h2>证书列表 <span class="count-badge">' + certs.length +
@@ -527,6 +546,14 @@
           if (attr('data-act') === 'selfsigned') { selfSignedModal(); return; }
           if (attr('data-act') === 'acme') { FG.orderModal(); return; }
           if (attr('data-act') === 'fnos-diag') { fnosDiagCopy(); return; }
+          if (attr('data-act') === 'fnos-recheck') { FG.refresh(); return; }
+          if (attr('data-act') === 'fnos-repair') {
+            if (!await FG.confirmBox('归档这次未完成的同步记录并恢复部署服务？不会修改飞牛系统证书，但请在飞牛「系统设置 → 安全性 → 证书」确认当前证书。', '修复部署服务')) return;
+            var rp = await FG.api('api/cert/fnos/repair', { method: 'POST', body: {} });
+            FG.toast(rp.message || '已修复', 'ok');
+            FG.refresh();
+            return;
+          }
           if (attr('data-renew')) {
             var rc = find(attr('data-renew'));
             await FG.api('api/acme/certs/' + rc.id, { method: 'PUT', body: { auto_renew: !rc.auto_renew } });
