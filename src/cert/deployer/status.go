@@ -488,6 +488,9 @@ func (e *Engine) Status() (*StatusResult, error) {
 		diagnostics = append([]string{"上次同步未完成且自动回滚失败：" + recErr +
 			"（可点「修复部署服务」归档该记录）"}, diagnostics...)
 	}
+	// 部署会重启这两个服务，而 fnOS 的「系统设置 / 网络设置」正挂在其上：
+	// 它们的实际状态必须出现在诊断里，否则一旦被停掉就成了「玄学故障」。
+	diagnostics = append([]string{serviceStateText()}, diagnostics...)
 	return &StatusResult{
 		Available: true, Experimental: true,
 		Targets: available, Unavailable: unavailable,
@@ -516,4 +519,24 @@ func (e *Engine) ensureStateDir() error {
 	return nil
 }
 
+// journalPath 返回当前事务记录文件路径。
 func (e *Engine) journalPath() string { return filepath.Join(e.StateDir, "active.json") }
+
+// serviceStateText 用一行说明部署相关服务是否在跑。
+func serviceStateText() string {
+	states := serviceStates()
+	parts := make([]string, 0, len(systemServiceNames))
+	bad := false
+	for _, svc := range systemServiceNames {
+		state := states[svc]
+		if state != "active" {
+			bad = true
+		}
+		parts = append(parts, strings.TrimSuffix(svc, ".service")+"="+state)
+	}
+	text := "飞牛服务状态：" + strings.Join(parts, "，")
+	if bad {
+		text += "（非 active 的那个服务被停掉了，会导致飞牛「系统设置 / 网络设置」提示该 app 未安装或未启动；点「修复部署服务」可恢复）"
+	}
+	return text
+}

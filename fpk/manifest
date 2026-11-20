@@ -1,5 +1,5 @@
 appname="fngate"
-version="1.2.14"
+version="1.2.15"
 display_name="路由网关"
 desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（ACME 泛域名申请与自动续期、手动上传、一键同步到飞牛系统 HTTPS）。三模块统一管理，原生应用，无需 Docker。"
 source="thirdparty"

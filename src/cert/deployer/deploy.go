@@ -523,11 +523,11 @@ func (e *Engine) Repair() (*RepairResult, error) {
 	if _, statErr := os.Lstat(e.journalPath()); os.IsNotExist(statErr) {
 		e.clearRecovery()
 		return &RepairResult{Repaired: true,
-			Message: "当前没有未完成的同步记录，部署服务可用，请重新预检同步"}, nil
+			Message: withServiceNotes("当前没有未完成的同步记录，部署服务可用，请重新预检同步")}, nil
 	}
 	if err := e.Recover(); err == nil {
 		return &RepairResult{Repaired: true,
-			Message: "已自动回滚上次未完成的同步，部署服务现在可用，可以重新预检"}, nil
+			Message: withServiceNotes("已自动回滚上次未完成的同步，部署服务现在可用，可以重新预检")}, nil
 	} else {
 		reason := textOf(err)
 		archive := filepath.Join(e.StateDir, "abandoned-"+newUUID()+".json")
@@ -538,9 +538,19 @@ func (e *Engine) Repair() (*RepairResult, error) {
 		e.pruneBackups()
 		e.clearRecovery()
 		return &RepairResult{Repaired: true,
-			Message: "已放弃这次无法自动回滚的记录（保留为 " + filepath.Base(archive) + "）。原因：" +
-				reason + "。请在飞牛「系统设置 → 安全性 → 证书」确认系统当前证书后，再重新预检同步"}, nil
+			Message: withServiceNotes("已放弃这次无法自动回滚的记录（保留为 " + filepath.Base(archive) + "）。原因：" +
+				reason + "。请在飞牛「系统设置 → 安全性 → 证书」确认系统当前证书后，再重新预检同步")}, nil
 	}
+}
+
+// withServiceNotes 追加「部署会触及的两个飞牛服务」的实际处置结果：
+// 上次同步被中断时，它们可能停在 inactive，表现就是系统设置/网络设置打不开。
+func withServiceNotes(msg string) string {
+	notes := ensureServices()
+	if len(notes) == 0 {
+		return msg + "；飞牛相关服务（network_service、trim_nginx）均在运行"
+	}
+	return msg + "；" + strings.Join(notes, "；")
 }
 
 type backupFile struct {

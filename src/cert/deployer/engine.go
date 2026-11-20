@@ -490,15 +490,58 @@ func verifyNginxUser(conf string) bool {
 }
 
 func restartServices() error {
-	for _, svc := range []string{"network_service.service", "trim_nginx.service"} {
+	for _, svc := range systemServiceNames {
 		if _, err := command("/usr/bin/systemctl", []string{"restart", svc}, "", restartTimeout); err != nil {
-			return fail(CodeIncompatible)
+			return failDetail(CodeIncompatible, "restart", "无法重启 "+svc+"："+err.Error())
 		}
 		if _, err := command("/usr/bin/systemctl", []string{"is-active", "--quiet", svc}, "", cmdTimeout); err != nil {
-			return fail(CodeIncompatible)
+			return failDetail(CodeIncompatible, "restart", svc+" 重启后未处于运行状态")
 		}
 	}
 	return nil
+}
+
+// systemServiceNames 是部署会触及、也是 fnOS「系统设置 / 网络设置」所依赖的服务。
+// 只重启这两个，不碰其它任何服务。
+var systemServiceNames = []string{"network_service.service", "trim_nginx.service"}
+
+// serviceStates 返回各服务的 systemd 状态（active / inactive / failed / unknown）。
+// 用于把「飞牛系统设置打不开」这类现象与我们的重启动作对上号。
+func serviceStates() map[string]string {
+	out := map[string]string{}
+	for _, svc := range systemServiceNames {
+		raw, err := command("/usr/bin/systemctl", []string{"is-active", svc}, "", cmdTimeout)
+		switch {
+		case err != nil:
+			out[svc] = "unknown"
+		case raw == "":
+			out[svc] = "unknown"
+		default:
+			out[svc] = raw
+		}
+	}
+	return out
+}
+
+// ensureServices 把未运行的服务拉起来，返回可读说明。
+// 只在用户显式点「修复」时调用：升级/重启应用时不会去动飞牛自己的服务。
+func ensureServices() []string {
+	notes := []string{}
+	for svc, state := range serviceStates() {
+		if state == "active" {
+			continue
+		}
+		if _, err := command("/usr/bin/systemctl", []string{"restart", svc}, "", restartTimeout); err != nil {
+			notes = append(notes, svc+" 当前 "+state+"，重启失败（请重启飞牛设备）")
+			continue
+		}
+		if _, err := command("/usr/bin/systemctl", []string{"is-active", "--quiet", svc}, "", cmdTimeout); err != nil {
+			notes = append(notes, svc+" 当前 "+state+"，重启后仍未运行（请重启飞牛设备）")
+			continue
+		}
+		notes = append(notes, svc+" 之前是 "+state+"，已恢复运行")
+	}
+	return notes
 }
 
 func newUUID() string {

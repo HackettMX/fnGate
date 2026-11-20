@@ -550,7 +550,13 @@
           if (attr('data-act') === 'fnos-repair') {
             if (!await FG.confirmBox('归档这次未完成的同步记录并恢复部署服务？不会修改飞牛系统证书，但请在飞牛「系统设置 → 安全性 → 证书」确认当前证书。', '修复部署服务')) return;
             var rp = await FG.api('api/cert/fnos/repair', { method: 'POST', body: {} });
-            FG.toast(rp.message || '已修复', 'ok');
+            var msg = rp.message || '已修复';
+            // 修复结果可能包含服务恢复细节，长文本改用弹窗，避免 toast 截断。
+            if (msg.length > 60) {
+              FG.modal({ title: '修复结果', body: '<p>' + FG.esc(msg) + '</p>' });
+            } else {
+              FG.toast(msg, 'ok');
+            }
             FG.refresh();
             return;
           }
