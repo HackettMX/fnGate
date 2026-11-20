@@ -72,16 +72,37 @@ func Text(c Code) string {
 }
 
 // DeployError 携带错误码与阶段，便于回滚日志与前端展示。
+// Detail 是脱敏后的逐行诊断，只对 status/diagnose 暴露，不含私钥或系统路径以外的内容。
 type DeployError struct {
-	Code  Code
-	Stage string
+	Code   Code
+	Stage  string
+	Detail string
 }
 
-func (e *DeployError) Error() string { return Text(e.Code) }
+func (e *DeployError) Error() string {
+	if e.Detail != "" {
+		return Text(e.Code) + "：" + e.Detail
+	}
+	return Text(e.Code)
+}
 
 func fail(c Code) error { return &DeployError{Code: c} }
 
 func failStage(c Code, stage string) error { return &DeployError{Code: c, Stage: stage} }
+
+// failDetail 给失败附上可展示的脱敏诊断（不含私钥内容）。
+func failDetail(c Code, stage, detail string) error {
+	return &DeployError{Code: c, Stage: stage, Detail: detail}
+}
+
+// detailOf 取出错误里的诊断文本。
+func detailOf(err error) string {
+	var de *DeployError
+	if errors.As(err, &de) {
+		return de.Detail
+	}
+	return ""
+}
 
 // codeOf 从错误中提取 DeployError（若非本包错误则返回 INCOMPATIBLE）。
 func codeOf(err error) Code {
@@ -110,27 +131,29 @@ const (
 	StageConsistency = "consistency"
 )
 
-// 目标证书（Database cert 行 + 索引条目）的公开视图。
+// Target 是目标证书（Database cert 行 + 索引条目）的公开视图。
 type Target struct {
-	ID             string   `json:"id"`
-	Domains        []string `json:"domains"`
-	ValidTo        string   `json:"valid_to"`
-	Fingerprint    string   `json:"fingerprint"`
-	Bound          bool     `json:"bound"`
-	ProbeHost      string   `json:"probe_host"`
-	VerifiedPorts  []int    `json:"verified_ports"`
-	Reason         string   `json:"reason,omitempty"`
+	ID            string   `json:"id"`
+	Domains       []string `json:"domains"`
+	ValidTo       string   `json:"valid_to"`
+	Fingerprint   string   `json:"fingerprint"`
+	Bound         bool     `json:"bound"`
+	ProbeHost     string   `json:"probe_host"`
+	VerifiedPorts []int    `json:"verified_ports"`
+	Reason        string   `json:"reason,omitempty"`
+	Detail        string   `json:"detail,omitempty"`
 }
 
 // StatusResult 是 /status 的响应。
 type StatusResult struct {
-	Available        bool     `json:"available"`
-	Experimental     bool     `json:"experimental"`
-	Targets          []Target `json:"targets"`
-	Unavailable      []Target `json:"unavailable_targets"`
-	Skipped          int      `json:"skipped"`
-	Running          bool     `json:"running"`
-	RecoveryFailed   bool     `json:"recovery_failed,omitempty"`
+	Available       bool     `json:"available"`
+	Experimental    bool     `json:"experimental"`
+	Targets         []Target `json:"targets"`
+	Unavailable     []Target `json:"unavailable_targets"`
+	Skipped         int      `json:"skipped"`
+	Running         bool     `json:"running"`
+	RecoveryFailed  bool     `json:"recovery_failed,omitempty"`
+	Diagnostics     []string `json:"diagnostics,omitempty"`
 }
 
 // PrepareInput 是 /prepare 与 /deploy 共享的输入。

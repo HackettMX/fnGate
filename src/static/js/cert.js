@@ -2,7 +2,7 @@
   'use strict';
   var FG = window.FG;
   var data = { certificates: [] };
-  var fnosData = { available: false, targets: [], certs: [] };
+  var fnosData = { available: false, targets: [], unavailable_targets: [], diagnostics: [], certs: [] };
   // 主分类按来源做成 tab，状态只做筛选；两者与搜索叠加生效。
   var filters = { source: 'all', status: 'all', q: '' };
 
@@ -195,6 +195,38 @@
     });
   }
 
+  // 生成可复制的真机诊断文本（不含任何私钥内容）。
+  function fnosDiagText() {
+    var lines = ['fnGate 飞牛系统 HTTPS 同步诊断', '部署服务在线：' + (fnosData.available ? '是' : '否')];
+    (fnosData.diagnostics || []).forEach(function (d) { lines.push('· ' + d); });
+    lines.push('可替换目标：' + (fnosData.targets || []).length);
+    (fnosData.targets || []).forEach(function (t) {
+      lines.push('  [可用] ' + (t.id || '?') + ' ' + (t.domains || []).join(', ') + (t.bound ? '（已绑定）' : '（未绑定）'));
+    });
+    lines.push('被跳过：' + (fnosData.unavailable_targets || []).length);
+    (fnosData.unavailable_targets || []).forEach(function (t) {
+      lines.push('  [跳过] ' + (t.id || '?') + ' ' + (t.domains || []).join(', '));
+      lines.push('         原因：' + (t.reason || '不可用'));
+      if (t.detail) lines.push('         详情：' + t.detail);
+    });
+    return lines.join('\n');
+  }
+
+  function fnosDiagCopy() {
+    var text = fnosDiagText();
+    function fallback() {
+      FG.modal({
+        title: '诊断信息（可全选复制）', readOnly: true,
+        body: '<textarea readonly style="width:100%;height:320px;font:12px/1.6 monospace">' + FG.esc(text) + '</textarea>'
+      });
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { FG.toast('诊断信息已复制', 'ok'); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
   function fnosModal(c) {
     var targets = fnosData.targets || [];
     var f = c.fnos || {};
@@ -216,6 +248,24 @@
         (f.last_error ? '<span class="hint" style="color:var(--danger)">' + FG.esc(f.last_error) + '</span>' : '') + '</div>';
     }
 
+    var skipped = fnosData.unavailable_targets || [];
+    var skippedHTML = '';
+    if (skipped.length) {
+      skippedHTML = '<div class="field full"><label>未通过预检的飞牛证书（' + skipped.length + '）</label>' +
+        '<div class="hint" style="line-height:1.7">' + skipped.map(function (t) {
+          return '· ' + FG.esc((t.domains || []).join(', ') || ('目标 ' + (t.id || '?'))) + ' — ' +
+            FG.esc(t.reason || '不可用') +
+            (t.detail ? '<br><span class="muted">' + FG.esc(t.detail) + '</span>' : '');
+        }).join('<br>') + '</div></div>';
+    }
+    var diagHTML = '';
+    if (!(fnosData.targets || []).length) {
+      diagHTML = '<div class="field full">' +
+        '<p class="hint">只替换飞牛里手动导入的同域名证书，系统自带证书不可替换。' +
+        '若你已导入仍显示无目标，点「复制诊断信息」把内容发给开发者定位。</p>' +
+        '<button type="button" class="btn" data-act="fnos-diag">复制诊断信息</button></div>';
+    }
+
     var body = '<div class="form-grid">' +
       statusHTML +
       '<div class="field full"><label for="fn-target">飞牛目标证书（系统里手动导入的同域名证书）</label>' +
@@ -228,6 +278,7 @@
       (c.source === 'acme' ?
         '<div class="field full"><label class="check"><input type="checkbox" id="fn-auto"' + (f.auto_deploy ? ' checked' : '') +
         ' /> 续期后自动重新同步</label><span class="hint">需先成功部署一次；ACME 续期成功后会用新证书再次替换系统证书</span></div>' : '') +
+      skippedHTML + diagHTML +
       '</div><div class="modal-error field-error" style="margin-top:12px" hidden></div>';
 
     FG.modal({
@@ -235,6 +286,10 @@
       submitText: '预检并同步',
       hint: '部署前会做完整预检（域名/证书链/信任/端口），部署失败自动回滚到原证书',
       body: body,
+      onOpen: function (mask) {
+        var btn = mask.querySelector('[data-act="fnos-diag"]');
+        if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); fnosDiagCopy(); });
+      },
       onSubmit: async function (mask) {
         var targetID = mask.querySelector('#fn-target').value;
         var host = mask.querySelector('#fn-host').value.trim();
@@ -303,7 +358,12 @@
     sub: 'ACME 申请、手动上传与自签证书统一供给反向代理',
     render: async function (root) {
       data = await FG.api('api/cert/list');
-      try { fnosData = await FG.api('api/cert/fnos/status'); } catch (_) { fnosData = { available: false, targets: [], certs: [] }; }
+      try { fnosData = await FG.api('api/cert/fnos/status'); } catch (_) {
+        fnosData = { available: false, targets: [], unavailable_targets: [], diagnostics: [], certs: [] };
+      }
+      fnosData.targets = fnosData.targets || [];
+      fnosData.unavailable_targets = fnosData.unavailable_targets || [];
+      fnosData.diagnostics = fnosData.diagnostics || [];
       var certs = data.certificates || [];
       var failing = data.failing_orders || [];
       var expDays = data.expiring_days || 30;
@@ -324,9 +384,23 @@
           failing.slice(0, 3).map(function (o) { return '<p>· ' + FG.esc(o.name || o.id) + '：' + FG.esc(o.error || '') + '</p>'; }).join('') + '</div></div>';
       }
       if (fnosData.available) {
-        html += '<div class="notice"><span class="notice-icon">✓</span><div class="notice-body">' +
-          '<strong>飞牛系统 HTTPS 同步可用</strong><p>检测到 ' + (fnosData.targets || []).length +
-          ' 个可替换的手动导入证书。在证书行点击「同步飞牛」即可把本应用的证书推送到系统 HTTPS。</p></div></div>';
+        var okN = (fnosData.targets || []).length;
+        var skip = fnosData.unavailable_targets || [];
+        if (okN > 0) {
+          html += '<div class="notice"><span class="notice-icon">✓</span><div class="notice-body">' +
+            '<strong>飞牛系统 HTTPS 同步可用</strong><p>检测到 ' + okN +
+            ' 个可替换的手动导入证书。在证书行点击「同步飞牛」即可把本应用的证书推送到系统 HTTPS。</p></div></div>';
+        } else {
+          var reasons = skip.map(function (t) {
+            return '<p>· ' + FG.esc((t.domains || []).join(', ') || ('目标 ' + (t.id || '?'))) + '：' +
+              FG.esc(t.reason || '不可用') + (t.detail ? '<br><span class="muted">' + FG.esc(t.detail) + '</span>' : '') + '</p>';
+          }).join('');
+          html += '<div class="notice danger"><span class="notice-icon">!</span><div class="notice-body">' +
+            '<strong>未找到可替换的飞牛证书（' + skip.length + ' 张被跳过）</strong>' +
+            (reasons || '<p>部署服务未返回任何证书行。</p>') +
+            '<p class="hint">只支持在飞牛「系统设置 → 安全性 → 证书」手动导入的同域名证书；请先导入一次并在「服务配置」里绑定后再试。</p>' +
+            '<button type="button" class="btn" data-act="fnos-diag">复制诊断信息</button></div></div>';
+        }
       } else {
         html += '<div class="notice"><span class="notice-icon">!</span><div class="notice-body">' +
           '<strong>飞牛系统 HTTPS 同步未就绪</strong><p>受限部署服务未连接，重启应用后重试；证书申请、上传与反向代理不受影响。</p></div></div>';
@@ -389,6 +463,7 @@
           if (attr('data-act') === 'upload') { uploadModal(); return; }
           if (attr('data-act') === 'selfsigned') { selfSignedModal(); return; }
           if (attr('data-act') === 'acme') { FG.orderModal(); return; }
+          if (attr('data-act') === 'fnos-diag') { fnosDiagCopy(); return; }
           if (attr('data-renew')) {
             var rc = find(attr('data-renew'));
             await FG.api('api/acme/certs/' + rc.id, { method: 'PUT', body: { auto_renew: !rc.auto_renew } });

@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,5 +136,69 @@ func TestValidDomainName(t *testing.T) {
 		if got := validDomainName(in); got != want {
 			t.Errorf("validDomainName(%q)=%v, want %v", in, got, want)
 		}
+	}
+}
+
+func TestRowTextLooseTypes(t *testing.T) {
+	cases := []struct {
+		in   interface{}
+		want string
+	}{
+		{json.Number("42"), "42"},
+		{float64(7), "7"},
+		{int64(9), "9"},
+		{"upload", "upload"},
+		{[]interface{}{"a.com", "*.a.com"}, "a.com,*.a.com"},
+		{map[string]interface{}{"x": 1}, ""}, // 嵌套对象不展开，避免误当路径
+		{nil, ""},
+	}
+	for _, c := range cases {
+		if got := rowText(c.in); got != c.want {
+			t.Errorf("rowText(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRowStringPicksNumericID(t *testing.T) {
+	row := certRow{"id": json.Number("13"), "source": "upload"}
+	if got := rowString(row, "id"); got != "13" {
+		t.Fatalf("数字 id 应被读出，实际 %q", got)
+	}
+}
+
+func TestSplitDomainsJSONArray(t *testing.T) {
+	got := cleanDomains(splitDomains(`["*.a.com","a.com"]`))
+	if !equalJSON(got, []string{"*.a.com", "a.com"}) {
+		t.Fatalf("JSON 数组 san 解析不对：%v", got)
+	}
+	got2 := cleanDomains(splitDomains("a.com, *.a.com"))
+	if !equalJSON(got2, []string{"*.a.com", "a.com"}) {
+		t.Fatalf("逗号 san 解析不对：%v", got2)
+	}
+}
+
+func TestNumEqualLooseTypes(t *testing.T) {
+	const ms int64 = 1760000000000
+	for _, v := range []interface{}{json.Number("1760000000000"), float64(ms), "1760000000000", int64(ms)} {
+		if !numEqual(v, ms) {
+			t.Errorf("numEqual(%v) 应为 true", v)
+		}
+	}
+	if numEqual("not-a-number", ms) || numEqual(nil, ms) {
+		t.Fatal("非法值不应判等")
+	}
+	// 秒级时间戳不能与毫秒静默相等：单位差异必须靠诊断暴露，不能猜。
+	if numEqual(json.Number("1760000000"), ms) {
+		t.Fatal("秒/毫秒不应被静默视为相等")
+	}
+}
+
+func TestFailDetailCarriesDiagnosis(t *testing.T) {
+	err := failDetail(CodeProtected, "source", `source="custom"`)
+	if detailOf(err) == "" {
+		t.Fatal("诊断文本丢失")
+	}
+	if got := err.Error(); !strings.Contains(got, "custom") {
+		t.Fatalf("错误信息未带诊断：%s", got)
 	}
 }

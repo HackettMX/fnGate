@@ -116,9 +116,14 @@ func (s *Server) reply(w http.ResponseWriter, status int, v interface{}) {
 func (s *Server) replyErr(w http.ResponseWriter, err error) {
 	de := &DeployError{}
 	if errors.As(err, &de) {
-		s.reply(w, statusOf(err), map[string]interface{}{
+		body := map[string]interface{}{
 			"code": string(de.Code), "stage": de.Stage, "error": Text(de.Code),
-		})
+		}
+		if de.Detail != "" {
+			body["detail"] = de.Detail
+			body["error"] = Text(de.Code) + "：" + de.Detail
+		}
+		s.reply(w, statusOf(err), body)
 		return
 	}
 	s.reply(w, 503, map[string]interface{}{

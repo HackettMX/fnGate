@@ -79,11 +79,8 @@ func sqlJSON(v interface{}) string {
 
 // compareAndSwapRow 用整行 JSON 相等作为 CAS 条件更新证书元数据，防止并发冲突。
 func compareAndSwapRow(before, after map[string]interface{}) error {
-	id, ok := before["id"].(json.Number)
-	if !ok {
-		return fail(CodeIncompatible)
-	}
-	idInt, err := strconv.ParseInt(id.String(), 10, 64)
+	idText := rowString(certRow(before), "id")
+	idInt, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || idInt <= 0 {
 		return fail(CodeIncompatible)
 	}

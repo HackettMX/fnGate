@@ -15,11 +15,12 @@ import (
 
 // FNOSOverview 是证书列表/页面层面的同步概览。
 type FNOSOverview struct {
-	Available      bool                   `json:"available"`
-	DaemonReady    bool                   `json:"daemon_ready"`
-	Targets        []deployer.Target      `json:"targets"`
-	Unavailable    []deployer.Target      `json:"unavailable_targets"`
-	Certs          []FNOSCertStatus       `json:"certs"`
+	Available   bool              `json:"available"`
+	DaemonReady bool              `json:"daemon_ready"`
+	Targets     []deployer.Target `json:"targets"`
+	Unavailable []deployer.Target `json:"unavailable_targets"`
+	Certs       []FNOSCertStatus  `json:"certs"`
+	Diagnostics []string          `json:"diagnostics"`
 }
 
 type FNOSCertStatus struct {
@@ -39,7 +40,7 @@ type FNOSCertStatus struct {
 func (m *Manager) FNOSStatus(ctx context.Context) (*FNOSOverview, error) {
 	ov := &FNOSOverview{
 		Targets: []deployer.Target{}, Unavailable: []deployer.Target{},
-		Certs: []FNOSCertStatus{},
+		Certs: []FNOSCertStatus{}, Diagnostics: []string{},
 	}
 	if m.pushClient.deployAvailable() {
 		res, err := m.pushClient.Status(ctx)
@@ -48,6 +49,7 @@ func (m *Manager) FNOSStatus(ctx context.Context) (*FNOSOverview, error) {
 			ov.DaemonReady = true
 			ov.Targets = res.Targets
 			ov.Unavailable = res.Unavailable
+			ov.Diagnostics = res.Diagnostics
 		}
 	}
 	for _, c := range m.opt.Store.Snapshot().Certificates {

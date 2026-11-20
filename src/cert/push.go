@@ -40,9 +40,10 @@ func newPushClient(socket string) *pushClient {
 
 // pushError 携带从守护返回的错误码与阶段。
 type pushError struct {
-	Code  string `json:"code"`
-	Stage string `json:"stage"`
-	Msg   string `json:"error"`
+	Code   string `json:"code"`
+	Stage  string `json:"stage"`
+	Msg    string `json:"error"`
+	Detail string `json:"detail"`
 }
 
 func (e *pushError) Error() string {

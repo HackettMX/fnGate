@@ -50,7 +50,7 @@ func (e *Engine) plan(input PrepareInput) (*journal, *targetInfo, *parsedCert, e
 	// 网关映射必须绑定该证书，且 host 为 fallback / 探测域名 / 证书域名之一。
 	mapped := false
 	for _, m := range st.Mappings {
-		if m.Cert == t.Row["certificate"] && m.Key == t.Row["private_key"] &&
+		if m.Cert == rowString(t.Row, "certificate") && m.Key == rowString(t.Row, "private_key") &&
 			(m.Host == "fallback" || m.Host == input.ProbeHost || contains(t.Parsed.Domains, m.Host)) {
 			mapped = true
 			break
@@ -79,7 +79,7 @@ func (e *Engine) plan(input PrepareInput) (*journal, *targetInfo, *parsedCert, e
 			Next: b64([]byte(input.PrivateKeyPEM)), NextMode: mode, NextGID: gid},
 	}
 
-	issuerPath, _ := t.Row["issuer_certificate"].(string)
+	issuerPath := rowString(t.Row, "issuer_certificate")
 	type extra struct {
 		path      string
 		pem       []byte
