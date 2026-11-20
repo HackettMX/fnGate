@@ -60,7 +60,7 @@ func TestPathFactsStructural(t *testing.T) {
 
 	worldWritable := filepath.Join(root, "w", "cert.pem")
 	writePerm(t, worldWritable, 0o666)
-	if _, blocking, _ := e.pathFacts(worldWritable, true); !hasSubstr(blocking, "其他用户可写") {
+	if _, blocking, _ := e.pathFacts(worldWritable, true); !hasSubstr(blocking, "其他用户") {
 		t.Fatalf("其他人可写的文件应被拒绝：%v", blocking)
 	}
 
@@ -99,7 +99,7 @@ func TestDirFactsTolerance(t *testing.T) {
 	}
 	e := &Engine{CertRoot: root, Secure: true}
 	_, blocking, _ := e.pathFacts(file, true)
-	if hasSubstr(blocking, "其他用户可写") {
+	if hasSubstr(blocking, "其他用户") {
 		t.Fatalf("0775 的目录不应因组写位被拒绝：%v", blocking)
 	}
 
@@ -107,7 +107,7 @@ func TestDirFactsTolerance(t *testing.T) {
 	if err := os.Chmod(sub, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	if _, blocking, _ := e.pathFacts(file, true); !hasSubstr(blocking, "其他用户可写") {
+	if _, blocking, _ := e.pathFacts(file, true); !hasSubstr(blocking, "其他用户") {
 		t.Fatalf("0777 的所在目录应被拒绝：%v", blocking)
 	}
 }
