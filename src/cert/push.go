@@ -33,7 +33,8 @@ func newPushClient(socket string) *pushClient {
 					return d.DialContext(ctx, "unix", socket)
 				},
 			},
-			Timeout: 120 * time.Second,
+			// 单次调用的超时由 callT 控制：部署要重启飞牛服务，耗时可能超过两分钟。
+			Timeout: 0,
 		},
 	}
 }
@@ -57,6 +58,13 @@ type pushTargetsResp struct {
 	deployer.StatusResult
 	Error string `json:"error,omitempty"`
 	Code  string `json:"code,omitempty"`
+}
+
+// callT 给单次调用设置独立超时（父 ctx 更早截止时以父为准）。
+func (c *pushClient) callT(ctx context.Context, d time.Duration, path string, in interface{}, out interface{}) error {
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	return c.call(ctx, path, in, out)
 }
 
 func (c *pushClient) call(ctx context.Context, path string, in interface{}, out interface{}) error {
@@ -99,7 +107,7 @@ func (c *pushClient) call(ctx context.Context, path string, in interface{}, out 
 
 func (c *pushClient) Status(ctx context.Context) (*deployer.StatusResult, error) {
 	var out pushTargetsResp
-	if err := c.call(ctx, "/status", struct{}{}, &out); err != nil {
+	if err := c.callT(ctx, 10*time.Second, "/status", struct{}{}, &out); err != nil {
 		return nil, err
 	}
 	res := out.StatusResult
@@ -108,7 +116,7 @@ func (c *pushClient) Status(ctx context.Context) (*deployer.StatusResult, error)
 
 func (c *pushClient) Prepare(ctx context.Context, in deployer.PrepareInput) (*deployer.PrepareResult, error) {
 	var out deployer.PrepareResult
-	if err := c.call(ctx, "/prepare", in, &out); err != nil {
+	if err := c.callT(ctx, 90*time.Second, "/prepare", in, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -116,7 +124,9 @@ func (c *pushClient) Prepare(ctx context.Context, in deployer.PrepareInput) (*de
 
 func (c *pushClient) Deploy(ctx context.Context, in deployer.PrepareInput) (*deployer.DeployResult, error) {
 	var out deployer.DeployResult
-	if err := c.call(ctx, "/deploy", in, &out); err != nil {
+	// 部署要写文件、重启飞牛服务并做 TLS 验证，按 5 分钟给足余量，
+	// 避免主应用先超时、而守护仍在执行时用户重试被「正在运行」挡住。
+	if err := c.callT(ctx, 300*time.Second, "/deploy", in, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

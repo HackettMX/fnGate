@@ -481,10 +481,12 @@ func (e *Engine) Status() (*StatusResult, error) {
 		available = append(available, publicTarget(t, bound, host, verified))
 	}
 	sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	running, runStage, runSecs := e.runningInfo()
 	return &StatusResult{
 		Available: true, Experimental: true,
 		Targets: available, Unavailable: unavailable,
-		Skipped: len(unavailable), Running: e.busy,
+		Skipped: len(unavailable), Running: running,
+		RunningStage: runStage, RunningFor: runSecs,
 		Ports: ports, Diagnostics: diagnostics,
 	}, nil
 }

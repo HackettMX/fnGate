@@ -12,18 +12,10 @@ import (
 
 // Deploy 执行完整部署事务。成功返回验证结果；失败自动回滚并验证旧证书 HTTPS。
 func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error) {
-	mu.Lock()
-	if running || e.busy {
-		mu.Unlock()
-		return nil, fail(CodeBusy)
+	if err := e.beginDeploy(running); err != nil {
+		return nil, err
 	}
-	e.busy = true
-	mu.Unlock()
-	defer func() {
-		mu.Lock()
-		e.busy = false
-		mu.Unlock()
-	}()
+	defer e.endDeploy()
 
 	// 优先使用预检生成的那份计划：用户确认的就是它。
 	// 只有计划已过期/守护重启过时才重新计算，并解释为什么对不上。
@@ -75,6 +67,7 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 
 	// 4. 原子写所有证书/索引文件。
 	stage = StageFiles
+	e.setStage(stage)
 	for _, f := range j.Files {
 		mode := os.FileMode(f.Mode)
 		if f.NextMode != 0 {
@@ -91,18 +84,21 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 
 	// 5. 重启系统服务。
 	stage = StageRestart
+	e.setStage(stage)
 	if err := restartServices(); err != nil {
 		return e.rollbackWithFailure(j, stage, err)
 	}
 
 	// 6. 用新证书指纹 + 公共信任验证本机 HTTPS。
 	stage = StageVerify
+	e.setStage(stage)
 	if err := probeTLS(j.ProbeHost, j.ProbePort, j.NewFingerprint, true); err != nil {
 		return e.rollbackWithFailure(j, stage, err)
 	}
 
 	// 7. 一致性检查：文件、数据库行、网关全部符合预期。
 	stage = StageConsistency
+	e.setStage(stage)
 	if err := e.verifyConsistency(j); err != nil {
 		return e.rollbackWithFailure(j, stage, err)
 	}
@@ -120,6 +116,83 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 		OK: true, Fingerprint: j.NewFingerprint, ValidTo: j.ValidTo,
 		VerifiedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// ---------- 运行态（串行化 + 进度） ----------
+
+// beginDeploy 占住部署位并记录起始阶段；已在运行则返回带进度的 BUSY。
+func (e *Engine) beginDeploy(running bool) error {
+	mu.Lock()
+	defer mu.Unlock()
+	if running || e.busy {
+		return busyError(e.busyStage, e.busySince)
+	}
+	e.busy = true
+	e.busyStage = StageMetadata
+	e.busySince = time.Now()
+	return nil
+}
+
+// endDeploy 释放部署位。
+func (e *Engine) endDeploy() {
+	mu.Lock()
+	e.busy = false
+	e.busyStage = ""
+	e.busySince = time.Time{}
+	mu.Unlock()
+}
+
+// setStage 记录当前阶段，供 /status 与 BUSY 提示展示。
+func (e *Engine) setStage(stage string) {
+	mu.Lock()
+	if e.busy {
+		e.busyStage = stage
+	}
+	mu.Unlock()
+}
+
+// runningInfo 返回是否在执行、当前阶段文案、已运行秒数。
+func (e *Engine) runningInfo() (bool, string, int) {
+	mu.Lock()
+	defer mu.Unlock()
+	if !e.busy {
+		return false, "", 0
+	}
+	return true, stageText(e.busyStage), int(time.Since(e.busySince).Seconds())
+}
+
+// busyError 生成可读的「正在运行」错误：说明在哪个阶段、跑了多久。
+func busyError(stage string, since time.Time) error {
+	secs := 0
+	if !since.IsZero() {
+		secs = int(time.Since(since).Seconds())
+	}
+	hint := "请等待其完成后再试"
+	if secs >= 300 {
+		hint = "已超过 5 分钟，可能是飞牛服务重启卡住；可到应用中心停用再启用 fnGate 后重试"
+	}
+	return failDetail(CodeBusy, "busy",
+		fmt.Sprintf("上一次同步仍在执行（阶段：%s，已 %d 秒），%s", stageText(stage), secs, hint))
+}
+
+// stageText 把内部阶段名翻成界面可读的中文。
+func stageText(stage string) string {
+	switch stage {
+	case StageMetadata:
+		return "更新证书元数据"
+	case StageFiles:
+		return "写入证书文件"
+	case StageRestart:
+		return "重启飞牛服务"
+	case StageVerify:
+		return "验证本机 HTTPS"
+	case StageConsistency:
+		return "复核一致性"
+	case "", "plan":
+		return "准备"
+	default:
+		return stage
+	}
 }
 
 // verifyPristine 确认当前文件与网关仍等于 plan 时的原始快照。

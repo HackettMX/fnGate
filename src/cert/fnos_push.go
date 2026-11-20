@@ -21,6 +21,9 @@ type FNOSOverview struct {
 	Unavailable []deployer.Target `json:"unavailable_targets"`
 	Certs       []FNOSCertStatus  `json:"certs"`
 	Ports       []int             `json:"ports"`
+	Running     bool              `json:"running"`
+	RunStage    string            `json:"running_stage,omitempty"`
+	RunFor      int               `json:"running_for,omitempty"`
 	Diagnostics []string          `json:"diagnostics"`
 }
 
@@ -51,6 +54,9 @@ func (m *Manager) FNOSStatus(ctx context.Context) (*FNOSOverview, error) {
 			ov.Targets = res.Targets
 			ov.Unavailable = res.Unavailable
 			ov.Diagnostics = res.Diagnostics
+			ov.Running = res.Running
+			ov.RunStage = res.RunningStage
+			ov.RunFor = res.RunningFor
 			if len(res.Ports) > 0 {
 				ov.Ports = res.Ports
 			}

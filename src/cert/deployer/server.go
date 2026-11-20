@@ -87,9 +87,8 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) running() bool {
-	mu.Lock()
-	defer mu.Unlock()
-	return s.engine.busy
+	busy, _, _ := s.engine.runningInfo()
+	return busy
 }
 
 func (s *Server) decode(r *http.Request, dst interface{}) error {
@@ -141,7 +140,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		s.replyErr(w, err)
 		return
 	}
-	res.Running = s.running()
 	s.reply(w, 200, res)
 }
 

@@ -23,14 +23,14 @@ import (
 
 // 系统固定路径。全部为 fnOS 内部实现，集中于此，便于随版本调整。
 const (
-	CertRoot     = "/usr/trim/var/trim_connect/ssls"
-	IndexPath    = "/usr/trim/etc/network_cert_all.conf"
-	GatewayPath  = "/usr/trim/etc/network_gateway_cert.conf"
-	NginxConf    = "/usr/trim/nginx/conf/nginx.conf"
-	StateDir     = "/var/lib/fngate-cert-deployer"
-	DefaultSock  = "/run/fngate-cert-deployer/control.sock"
+	CertRoot      = "/usr/trim/var/trim_connect/ssls"
+	IndexPath     = "/usr/trim/etc/network_cert_all.conf"
+	GatewayPath   = "/usr/trim/etc/network_gateway_cert.conf"
+	NginxConf     = "/usr/trim/nginx/conf/nginx.conf"
+	StateDir      = "/var/lib/fngate-cert-deployer"
+	DefaultSock   = "/run/fngate-cert-deployer/control.sock"
 	DefaultRunDir = "/run/fngate-cert-deployer"
-	DBName       = "trim_connect"
+	DBName        = "trim_connect"
 )
 
 // 错误码：客户端据此给出可读中文提示，且不泄漏系统内部细节。
@@ -146,26 +146,28 @@ type Target struct {
 
 // StatusResult 是 /status 的响应。
 type StatusResult struct {
-	Available       bool     `json:"available"`
-	Experimental    bool     `json:"experimental"`
-	Targets         []Target `json:"targets"`
-	Unavailable     []Target `json:"unavailable_targets"`
-	Skipped         int      `json:"skipped"`
-	Running         bool     `json:"running"`
-	Ports           []int    `json:"ports,omitempty"`
-	RecoveryFailed  bool     `json:"recovery_failed,omitempty"`
-	Diagnostics     []string `json:"diagnostics,omitempty"`
+	Available      bool     `json:"available"`
+	Experimental   bool     `json:"experimental"`
+	Targets        []Target `json:"targets"`
+	Unavailable    []Target `json:"unavailable_targets"`
+	Skipped        int      `json:"skipped"`
+	Running        bool     `json:"running"`
+	RunningStage   string   `json:"running_stage,omitempty"`
+	RunningFor     int      `json:"running_for,omitempty"`
+	Ports          []int    `json:"ports,omitempty"`
+	RecoveryFailed bool     `json:"recovery_failed,omitempty"`
+	Diagnostics    []string `json:"diagnostics,omitempty"`
 }
 
 // PrepareInput 是 /prepare 与 /deploy 共享的输入。
 type PrepareInput struct {
-	TargetID          string `json:"target_id"`
-	CertificatePEM    string `json:"certificate_pem"`
-	PrivateKeyPEM     string `json:"private_key_pem"`
-	ProbeHost         string `json:"probe_host"`
-	ProbePort         int    `json:"probe_port"`
+	TargetID            string `json:"target_id"`
+	CertificatePEM      string `json:"certificate_pem"`
+	PrivateKeyPEM       string `json:"private_key_pem"`
+	ProbeHost           string `json:"probe_host"`
+	ProbePort           int    `json:"probe_port"`
 	ExpectedFingerprint string `json:"expected_fingerprint,omitempty"`
-	PlanID            string `json:"plan_id,omitempty"`
+	PlanID              string `json:"plan_id,omitempty"`
 }
 
 // PrepareResult 是 /prepare 的响应。

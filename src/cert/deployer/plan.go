@@ -188,7 +188,10 @@ func (e *Engine) plan(input PrepareInput) (*journal, *targetInfo, *parsedCert, e
 // Prepare 只做预检，返回预览信息。
 func (e *Engine) Prepare(input PrepareInput, running bool) (*PrepareResult, error) {
 	if running {
-		return nil, fail(CodeBusy)
+		mu.Lock()
+		stage, since := e.busyStage, e.busySince
+		mu.Unlock()
+		return nil, busyError(stage, since)
 	}
 	j, t, next, err := e.plan(input)
 	if err != nil {

@@ -3,17 +3,20 @@ package deployer
 import (
 	"crypto/rand"
 	"os"
+	"time"
 )
 
 // Engine 持有一份部署状态。所有修改通过互斥锁串行化（busy 语义）。
 type Engine struct {
-	CertRoot   string
-	IndexPath  string
+	CertRoot    string
+	IndexPath   string
 	GatewayPath string
-	StateDir   string
-	Secure     bool
+	StateDir    string
+	Secure      bool
 
 	busy           bool
+	busyStage      string
+	busySince      time.Time
 	recoveryFailed bool
 }
 

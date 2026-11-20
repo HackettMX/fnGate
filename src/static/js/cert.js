@@ -278,7 +278,18 @@
         '<button type="button" class="btn" data-act="fnos-diag">复制诊断信息</button></div>';
     }
 
+    // 守护里有部署在跑时，禁止再次提交，并自动轮询直到结束。
+    // 部署要重启飞牛服务，耗时可达数十秒；用户很容易在这期间反复点击。
+    var runningHTML = '';
+    if (fnosData.running) {
+      runningHTML = '<div class="field full"><label>同步进行中</label>' +
+        '<span class="hint" style="line-height:1.7">' +
+        '上一次同步仍在执行（' + FG.esc(fnosData.running_stage || '部署中') + '，已 ' +
+        (fnosData.running_for || 0) + ' 秒）。完成前不能再提交，页面会自动刷新状态。</span></div>';
+    }
+
     var body = '<div class="form-grid">' +
+      runningHTML +
       statusHTML +
       '<div class="field full"><label for="fn-target">飞牛目标证书（系统里手动导入的同域名证书）</label>' +
       '<select id="fn-target">' + (targetOptions || '<option value="">（无可用目标）</option>') + '</select>' +
@@ -298,9 +309,9 @@
     FG.modal({
       title: '同步到飞牛系统 HTTPS · ' + (c.name || c.primary_domain), wide: true,
       submitText: '预检并同步',
-      hint: '部署前会做完整预检（域名/证书链/信任/端口），部署失败自动回滚到原证书',
+      hint: '部署前会做完整预检（域名/证书链/信任/端口）；同步会重启飞牛相关服务，通常 20–60 秒，失败自动回滚到原证书',
       body: body,
-      onOpen: function (mask) {
+      onOpen: function (mask, close) {
         var btn = mask.querySelector('[data-act="fnos-diag"]');
         if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); fnosDiagCopy(); });
         // 切换目标时用该证书已确认的端口回填，避免用户手填错端口。
@@ -314,6 +325,21 @@
           });
           if (sel.value) sel.dispatchEvent(new Event('change'));
         }
+        // 上一次同步还在跑：禁用提交并轮询，结束后刷新页面状态。
+        if (fnosData.running) {
+          var submitBtn = mask.querySelector('[data-submit]');
+          if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '正在同步…'; }
+          var tick = setInterval(async function () {
+            if (!mask.isConnected) { clearInterval(tick); return; }
+            var st;
+            try { st = await FG.api('api/cert/fnos/status'); } catch (_) { return; }
+            if (st && !st.running) {
+              clearInterval(tick);
+              if (close) close();
+              FG.refresh();
+            }
+          }, 3000);
+        }
       },
       onSubmit: async function (mask) {
         var targetID = mask.querySelector('#fn-target').value;
@@ -321,6 +347,11 @@
         var port = parseInt(mask.querySelector('#fn-port').value, 10);
         var autoEl = mask.querySelector('#fn-auto');
         var auto = autoEl ? autoEl.checked : false;
+        if (fnosData.running) {
+          FG.fieldError(mask, '上一次同步仍在执行（' + (fnosData.running_stage || '部署中') + '，已 ' +
+            (fnosData.running_for || 0) + ' 秒），完成后再试');
+          return false;
+        }
         if (!targetID) { FG.fieldError(mask, '没有可替换的飞牛目标证书，请先在飞牛「系统设置 → 安全性 → 证书」手动导入同域名证书'); return false; }
         if (!host || !(port > 0 && port <= 65535)) { FG.fieldError(mask, '请填写有效的验证域名与 HTTPS 端口'); return false; }
 
@@ -348,11 +379,17 @@
           '将替换飞牛系统 HTTPS 证书并重启相关服务（网站可能短暂中断）。失败会自动回滚。\n\n确认部署？';
         if (!await FG.confirmBox(summary, '确认同步到飞牛')) return false;
 
-        // 第二步：部署。
-        await FG.api('api/cert/fnos/deploy', {
-          method: 'POST',
-          body: { cert_id: c.id, target_id: targetID, probe_host: host, probe_port: port, plan_id: plan.plan_id }
-        });
+        // 第二步：部署。要重启飞牛服务，通常 20–60 秒，期间按钮显示进度。
+        var submitBtn = mask.querySelector('[data-submit]');
+        if (submitBtn) submitBtn.textContent = '同步中…';
+        try {
+          await FG.api('api/cert/fnos/deploy', {
+            method: 'POST',
+            body: { cert_id: c.id, target_id: targetID, probe_host: host, probe_port: port, plan_id: plan.plan_id }
+          });
+        } finally {
+          if (submitBtn) submitBtn.textContent = '预检并同步';
+        }
         if (auto) {
           try { await FG.api('api/cert/fnos/auto', { method: 'POST', body: { cert_id: c.id, enabled: true } }); } catch (_) { }
         }
