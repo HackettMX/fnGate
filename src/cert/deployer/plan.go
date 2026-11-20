@@ -57,7 +57,9 @@ func (e *Engine) plan(input PrepareInput) (*journal, *targetInfo, *parsedCert, e
 		}
 	}
 	if !mapped {
-		return nil, nil, nil, fail(CodeIncompatible)
+		return nil, nil, nil, failDetail(CodeIncompatible, "mapping",
+			fmt.Sprintf("network_gateway_cert.conf 共 %d 条映射，没有一条把这张证书绑定到 HTTPS 服务；"+
+				"请先在飞牛「系统设置 → 安全性 → 证书 → 服务配置」里选择它", len(st.Mappings)))
 	}
 
 	// 部署前用旧证书指纹探测本机 HTTPS，确认目标当前在线。

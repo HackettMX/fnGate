@@ -2,7 +2,7 @@
   'use strict';
   var FG = window.FG;
   var data = { certificates: [] };
-  var fnosData = { available: false, targets: [], unavailable_targets: [], diagnostics: [], certs: [] };
+  var fnosData = { available: false, targets: [], unavailable_targets: [], diagnostics: [], certs: [], ports: [] };
   // 主分类按来源做成 tab，状态只做筛选；两者与搜索叠加生效。
   var filters = { source: 'all', status: 'all', q: '' };
 
@@ -231,7 +231,19 @@
     var targets = fnosData.targets || [];
     var f = c.fnos || {};
     var hostDefault = f.probe_host || (c.primary_domain || '').replace(/^\*\./, '');
-    var portDefault = f.probe_port || 443;
+    // 端口优先级：上次成功的端口 > 已用目标证书验证通过的端口 > fnOS 默认 5667。
+    var verifiedPorts = [];
+    targets.forEach(function (t) {
+      (t.verified_ports || []).forEach(function (p) { if (verifiedPorts.indexOf(p) < 0) verifiedPorts.push(p); });
+    });
+    var portDefault = f.probe_port || verifiedPorts[0] || 5667;
+    var portHint = verifiedPorts.length ?
+      ('已确认可用的端口：' + verifiedPorts.join('、')) :
+      '默认 5667；若改过端口，以飞牛「系统设置 → 安全性」里的 HTTPS 端口为准';
+    var listenPorts = fnosData.ports || [];
+    var portOptions = listenPorts.map(function (p) {
+      return '<option value="' + p + '"></option>';
+    }).join('');
     var targetOptions = targets.map(function (t) {
       var sel = t.id === f.target_id ? ' selected' : '';
       var dom = (t.domains || []).join(', ');
@@ -274,7 +286,9 @@
       '<div class="field"><label for="fn-host">验证域名</label>' +
       '<input type="text" id="fn-host" value="' + FG.esc(hostDefault) + '" placeholder="例如 nas.example.com" /></div>' +
       '<div class="field"><label for="fn-port">系统 HTTPS 端口</label>' +
-      '<input type="number" id="fn-port" min="1" max="65535" value="' + portDefault + '" /></div>' +
+      '<input type="number" id="fn-port" list="fn-port-list" min="1" max="65535" value="' + portDefault + '" />' +
+      '<datalist id="fn-port-list">' + portOptions + '</datalist>' +
+      '<span class="hint">' + FG.esc(portHint) + '</span></div>' +
       (c.source === 'acme' ?
         '<div class="field full"><label class="check"><input type="checkbox" id="fn-auto"' + (f.auto_deploy ? ' checked' : '') +
         ' /> 续期后自动重新同步</label><span class="hint">需先成功部署一次；ACME 续期成功后会用新证书再次替换系统证书</span></div>' : '') +
@@ -289,6 +303,17 @@
       onOpen: function (mask) {
         var btn = mask.querySelector('[data-act="fnos-diag"]');
         if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); fnosDiagCopy(); });
+        // 切换目标时用该证书已确认的端口回填，避免用户手填错端口。
+        var sel = mask.querySelector('#fn-target');
+        var portEl = mask.querySelector('#fn-port');
+        if (sel && portEl) {
+          sel.addEventListener('change', function () {
+            var t = targets.filter(function (x) { return String(x.id) === String(sel.value); })[0];
+            var vp = (t && t.verified_ports) || [];
+            if (vp.length) portEl.value = vp[0];
+          });
+          if (sel.value) sel.dispatchEvent(new Event('change'));
+        }
       },
       onSubmit: async function (mask) {
         var targetID = mask.querySelector('#fn-target').value;
@@ -359,11 +384,12 @@
     render: async function (root) {
       data = await FG.api('api/cert/list');
       try { fnosData = await FG.api('api/cert/fnos/status'); } catch (_) {
-        fnosData = { available: false, targets: [], unavailable_targets: [], diagnostics: [], certs: [] };
+        fnosData = { available: false, targets: [], unavailable_targets: [], diagnostics: [], certs: [], ports: [] };
       }
       fnosData.targets = fnosData.targets || [];
       fnosData.unavailable_targets = fnosData.unavailable_targets || [];
       fnosData.diagnostics = fnosData.diagnostics || [];
+      fnosData.ports = fnosData.ports || [];
       var certs = data.certificates || [];
       var failing = data.failing_orders || [];
       var expDays = data.expiring_days || 30;

@@ -152,6 +152,7 @@ type StatusResult struct {
 	Unavailable     []Target `json:"unavailable_targets"`
 	Skipped         int      `json:"skipped"`
 	Running         bool     `json:"running"`
+	Ports           []int    `json:"ports,omitempty"`
 	RecoveryFailed  bool     `json:"recovery_failed,omitempty"`
 	Diagnostics     []string `json:"diagnostics,omitempty"`
 }

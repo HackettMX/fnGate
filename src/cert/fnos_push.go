@@ -20,6 +20,7 @@ type FNOSOverview struct {
 	Targets     []deployer.Target `json:"targets"`
 	Unavailable []deployer.Target `json:"unavailable_targets"`
 	Certs       []FNOSCertStatus  `json:"certs"`
+	Ports       []int             `json:"ports"`
 	Diagnostics []string          `json:"diagnostics"`
 }
 
@@ -40,7 +41,7 @@ type FNOSCertStatus struct {
 func (m *Manager) FNOSStatus(ctx context.Context) (*FNOSOverview, error) {
 	ov := &FNOSOverview{
 		Targets: []deployer.Target{}, Unavailable: []deployer.Target{},
-		Certs: []FNOSCertStatus{}, Diagnostics: []string{},
+		Certs: []FNOSCertStatus{}, Diagnostics: []string{}, Ports: []int{},
 	}
 	if m.pushClient.deployAvailable() {
 		res, err := m.pushClient.Status(ctx)
@@ -50,6 +51,9 @@ func (m *Manager) FNOSStatus(ctx context.Context) (*FNOSOverview, error) {
 			ov.Targets = res.Targets
 			ov.Unavailable = res.Unavailable
 			ov.Diagnostics = res.Diagnostics
+			if len(res.Ports) > 0 {
+				ov.Ports = res.Ports
+			}
 		}
 	}
 	for _, c := range m.opt.Store.Snapshot().Certificates {

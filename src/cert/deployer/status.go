@@ -134,15 +134,11 @@ func (e *Engine) target(row certRow, st *state) (*targetInfo, error) {
 	}
 	certSnap, err := e.snapshot(certPath, true)
 	if err != nil {
-		return nil, failDetail(CodeIncompatible, "cert-file",
-			fmt.Sprintf("证书文件 %q 不可安全读取（需普通文件、root 属主、位于 %s 下且各级目录不可被组/其他写）；若路径不在此目录说明 fnOS 版本改了证书存放位置",
-				certPath, e.CertRoot))
+		return nil, failDetail(CodeIncompatible, "cert-file", e.fileFailDetail(certPath, true, err))
 	}
 	keySnap, err := e.snapshot(keyPath, true)
 	if err != nil {
-		return nil, failDetail(CodeIncompatible, "key-file",
-			fmt.Sprintf("私钥文件 %q 不可安全读取（需普通文件、root 属主、位于 %s 下且各级目录不可被组/其他写）",
-				keyPath, e.CertRoot))
+		return nil, failDetail(CodeIncompatible, "key-file", e.fileFailDetail(keyPath, true, err))
 	}
 	parsed, err := inspectCertificate(mustB64(certSnap.Content), mustB64(keySnap.Content), true)
 	if err != nil {
@@ -186,6 +182,18 @@ func (e *Engine) target(row certRow, st *state) (*targetInfo, error) {
 		Row: row, RowID: id, Cert: certSnap, Key: keySnap,
 		Parsed: parsed, Entry: &ent, EntryIndex: matches[0],
 	}, nil
+}
+
+// fileFailDetail 生成一处文件不可用原因的完整说明：优先给出逐项检查事实，
+// 其次是底层错误里的诊断，最后才回落到通用描述。
+func (e *Engine) fileFailDetail(file string, isCert bool, err error) string {
+	if rep := e.pathReport(file, isCert); rep != "" {
+		return rep
+	}
+	if d := detailOf(err); d != "" {
+		return d
+	}
+	return fmt.Sprintf("无法读取 %s（需普通文件、位于 %s 下、属主 root 且所在目录不可被其他用户改写）", file, e.CertRoot)
 }
 
 type targetInfo struct {
@@ -362,7 +370,7 @@ func (e *Engine) Status() (*StatusResult, error) {
 	sort.Strings(sources)
 	diagnostics := []string{
 		fmt.Sprintf("public.cert 共 %d 行；source 分布：%s", len(st.Rows), strings.Join(sources, ", ")),
-		fmt.Sprintf("network_cert_all.conf %d 条，network_gateway_cert.conf %d 条，检测到 HTTPS 端口 %v",
+		fmt.Sprintf("network_cert_all.conf %d 条，network_gateway_cert.conf %d 条；nginx 监听端口 %v（fnOS 默认 HTTPS 为 5667）",
 			len(st.Entries), len(st.Mappings), ports),
 		fmt.Sprintf("证书根目录 %s", e.CertRoot),
 	}
@@ -408,7 +416,7 @@ func (e *Engine) Status() (*StatusResult, error) {
 		Available: true, Experimental: true,
 		Targets: available, Unavailable: unavailable,
 		Skipped: len(unavailable), Running: e.busy,
-		Diagnostics: diagnostics,
+		Ports: ports, Diagnostics: diagnostics,
 	}, nil
 }
 

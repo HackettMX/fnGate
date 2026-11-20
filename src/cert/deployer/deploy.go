@@ -171,6 +171,10 @@ func (e *Engine) rollbackWithFailure(j *journal, stage string, cause error) (*De
 		return nil, fail(CodeRecovery)
 	}
 	_ = os.Rename(e.journalPath(), filepath.Join(e.StateDir, "rolled-back-"+newUUID()+".json"))
+	// 回滚成功也把失败原因透出，否则用户在界面上只看到「已恢复原证书」而不知道为何失败。
+	if d := detailOf(cause); d != "" {
+		return nil, failDetail(CodeRolledBack, stage, d)
+	}
 	return nil, failStage(CodeRolledBack, stage)
 }
 
