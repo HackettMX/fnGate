@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"fngate/api"
-	"fngate/cert"
+	"fngate/cert/deployer"
 	"fngate/core"
 )
 
@@ -50,29 +50,10 @@ func main() {
 			}
 			fmt.Println("ok")
 			return
-		case "--cert-sync":
-			// root 侧 helper：只读取启动配置里固定的系统证书索引，
-			// 复制成应用私有快照后退出。绝不接收任意文件路径参数。
-			fs := flag.NewFlagSet("cert-sync", flag.ContinueOnError)
-			dataFlag := fs.String("data", "", "data directory")
-			if err := fs.Parse(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "参数错误:", err)
-				os.Exit(2)
-			}
-			cfg := LoadConfig(*dataFlag, 0)
-			res, err := cert.SyncSystem(cert.SyncOptions{
-				DataDir: cfg.DataDir, CertsDir: cfg.CertsDir, SecretsDir: cfg.SecretsDir,
-				ConfPaths: cfg.SysConfPaths, SSLRoots: cfg.SysSSLRoots,
-				AllowedRoots: cfg.SysAllowed, ChownUser: os.Getenv("FNGATE_APP_USER"),
-			})
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "同步飞牛证书失败:", err)
-				os.Exit(1)
-			}
-			fmt.Printf("ok found=%d written=%d skipped=%d sources=%v\n", res.Found, res.Written, res.Skipped, res.Sources)
-			for _, w := range res.Warnings {
-				fmt.Fprintln(os.Stderr, "warn:", w)
-			}
+		case "--cert-deployer":
+			// root 侧受限守护：只监听本地 Unix Socket，供降权的主应用
+			// 调用系统 HTTPS 证书替换（status/prepare/deploy）。不监听 TCP。
+			runDeployer(os.Args[2:])
 			return
 		}
 	}
@@ -193,6 +174,38 @@ func withGatewayPrefix(next http.Handler, prefix string) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// runDeployer 启动 root 侧证书部署守护。参数固定、不接收任何来自前端的路径。
+func runDeployer(args []string) {
+	fs := flag.NewFlagSet("cert-deployer", flag.ContinueOnError)
+	socket := fs.String("socket", deployer.DefaultSock, "unix socket path")
+	runDir := fs.String("rundir", deployer.DefaultRunDir, "runtime directory")
+	gid := fs.Int("group-gid", 0, "app group gid allowed to connect")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "参数错误:", err)
+		os.Exit(2)
+	}
+	if *gid <= 0 {
+		fmt.Fprintln(os.Stderr, "必须提供有效的 --group-gid")
+		os.Exit(2)
+	}
+	srv := deployer.NewServer(*socket, *runDir, *gid)
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Start() }()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cert-deployer 退出:", err)
+			_ = srv.Stop()
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		_ = srv.Stop()
+	}
 }
 
 func probeSocket(path string) error {

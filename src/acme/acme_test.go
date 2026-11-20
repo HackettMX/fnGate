@@ -39,7 +39,7 @@ func newHarness(t *testing.T, withWorker bool) *harness {
 	}
 	cm := cert.New(cert.Options{
 		DataDir: dir, CertsDir: certsDir, SecretsDir: secrets,
-		SysAllowedRoots: []string{dir}, Store: st, Bus: bus, Logger: log,
+		Store: st, Bus: bus, Logger: log,
 	})
 	var m *Manager
 	if withWorker {

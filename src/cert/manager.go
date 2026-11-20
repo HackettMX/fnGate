@@ -12,18 +12,15 @@ import (
 	"fngate/core"
 )
 
-// Options 是证书模块的运行依赖。系统证书路径只允许来自启动配置，
-// 绝不接受 API 参数，避免降权进程借 root helper 读取任意文件。
+// Options 是证书模块的运行依赖。
 type Options struct {
-	DataDir         string
-	CertsDir        string
-	SecretsDir      string
-	SysConfPaths    []string
-	SysSSLRoots     []string
-	SysAllowedRoots []string
-	Store           *core.Store
-	Bus             *core.EventBus
-	Logger          *core.Logger
+	DataDir       string
+	CertsDir      string
+	SecretsDir    string
+	DeployerSocket string // root 部署守护的 Unix Socket；为空用默认路径
+	Store         *core.Store
+	Bus           *core.EventBus
+	Logger        *core.Logger
 }
 
 type cachedCert struct {
@@ -31,11 +28,12 @@ type cachedCert struct {
 	stamp string
 }
 
-// Manager 同时承担三件事：证书库 CRUD、TLS 握手期的 CertResolver、
-// 以及飞牛系统证书快照的导入。它实现 proxy.CertResolver（Go 接口为结构化匹配，
+// Manager 同时承担两件事：证书库 CRUD、TLS 握手期的 CertResolver。
+// 它实现 proxy.CertResolver（Go 接口为结构化匹配，
 // 因此本包无需 import proxy，不存在循环依赖）。
 type Manager struct {
-	opt Options
+	opt        Options
+	pushClient *pushClient
 
 	mu       sync.Mutex
 	cache    map[string]cachedCert
@@ -46,7 +44,10 @@ func New(opt Options) *Manager {
 	if opt.Bus == nil {
 		opt.Bus = core.NewEventBus()
 	}
-	return &Manager{opt: opt, cache: map[string]cachedCert{}}
+	return &Manager{
+		opt: opt, cache: map[string]cachedCert{},
+		pushClient: newPushClient(opt.DeployerSocket),
+	}
 }
 
 // ---------- 文件读写 ----------
@@ -339,6 +340,7 @@ type View struct {
 	CreatedAt     string         `json:"created_at"`
 	UpdatedAt     string         `json:"updated_at"`
 	ACME          *core.ACMEMeta `json:"acme,omitempty"`
+	FNOS          *core.FNOSMeta `json:"fnos,omitempty"`
 }
 
 func (m *Manager) viewOf(c core.Certificate, st core.State) View {
@@ -354,7 +356,7 @@ func (m *Manager) viewOf(c core.Certificate, st core.State) View {
 		SANs: c.SANs, Issuer: c.Issuer, NotBefore: c.NotBefore, NotAfter: c.NotAfter,
 		Fingerprint: c.Fingerprint, DaysLeft: days, Status: status, FilesOK: filesOK,
 		References: len(m.References(c.ID)), IsDefault: st.Settings.DefaultCertID == c.ID,
-		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, ACME: c.ACME,
+		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, ACME: c.ACME, FNOS: c.FNOS,
 	}
 	if c.ACME != nil {
 		v.AutoRenew = c.ACME.AutoRenew

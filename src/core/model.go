@@ -96,10 +96,25 @@ type ACMEMeta struct {
 	FailCount    int    `json:"fail_count"`
 }
 
+// FNOSMeta 记录一张应用证书「同步到飞牛系统 HTTPS」的状态。
+// 只做单证书推送替换，不导入飞牛证书，也不管理飞牛证书库。
+type FNOSMeta struct {
+	TargetID      string `json:"target_id,omitempty"`       // 飞牛 DB cert.id（手动导入的目标证书）
+	TargetDomains []string `json:"target_domains,omitempty"` // 目标证书域名快照
+	ProbeHost     string `json:"probe_host,omitempty"`      // HTTPS 验证域名
+	ProbePort     int    `json:"probe_port,omitempty"`      // HTTPS 验证端口
+	Fingerprint   string `json:"fingerprint,omitempty"`     // 上次成功部署的本证书指纹
+	Status        string `json:"status,omitempty"`          // deployed | stale | error
+	LastDeployAt  string `json:"last_deploy_at,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	AutoDeploy    bool   `json:"auto_deploy"`               // 续期后自动重新部署（需先手动成功一次）
+	VerifiedPorts []int  `json:"verified_ports,omitempty"`
+}
+
 type Certificate struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
-	Source        string    `json:"source"` // manual | fnos | acme | selfsigned
+	Source        string    `json:"source"` // manual | acme | selfsigned
 	PrimaryDomain string    `json:"primary_domain"`
 	SANs          []string  `json:"sans"`
 	Issuer        string    `json:"issuer"`
@@ -109,6 +124,7 @@ type Certificate struct {
 	CertPath      string    `json:"cert_path"` // 相对 DataDir
 	KeyPath       string    `json:"key_path"`  // 相对 DataDir
 	ACME          *ACMEMeta `json:"acme,omitempty"`
+	FNOS          *FNOSMeta `json:"fnos,omitempty"`
 	CreatedAt     string    `json:"created_at"`
 	UpdatedAt     string    `json:"updated_at"`
 }

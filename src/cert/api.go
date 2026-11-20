@@ -24,7 +24,11 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /status", a.status)
 	mux.HandleFunc("POST /upload", a.upload)
 	mux.HandleFunc("POST /selfsigned", a.selfsigned)
-	mux.HandleFunc("POST /fnos/sync", a.fnosSync)
+	mux.HandleFunc("GET /fnos/status", a.fnosStatus)
+	mux.HandleFunc("POST /fnos/prepare", a.fnosPrepare)
+	mux.HandleFunc("POST /fnos/deploy", a.fnosDeploy)
+	mux.HandleFunc("POST /fnos/auto", a.fnosAuto)
+	mux.HandleFunc("POST /fnos/reset", a.fnosReset)
 	mux.HandleFunc("POST /default", a.setDefault)
 	mux.HandleFunc("GET /{id}", a.detail)
 	mux.HandleFunc("GET /{id}/references", a.references)
@@ -72,7 +76,6 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 			failing = append(failing, map[string]string{"id": o.ID, "name": strings.Join(o.Domains, ", "), "error": o.Error})
 		}
 	}
-	syncedAt, snapshotCount := a.m.SnapshotInfo()
 	// 到期阈值跟随设置里的「续期提前天数」，前端文案据此显示，不写死 30 天。
 	expiringDays := st.Settings.RenewDays
 	if expiringDays <= 0 {
@@ -86,8 +89,6 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		"expiring_days":   expiringDays,
 		"default_cert_id": st.Settings.DefaultCertID,
 		"failing_orders":  failing,
-		"fnos_synced_at":  syncedAt,
-		"fnos_snapshot":   snapshotCount,
 	})
 }
 
@@ -150,14 +151,90 @@ func (a *API) selfsigned(w http.ResponseWriter, r *http.Request) {
 	api.WriteOK(w, map[string]interface{}{"certificate": c.ID, "name": c.Name})
 }
 
-func (a *API) fnosSync(w http.ResponseWriter, r *http.Request) {
-	res, err := a.m.Sync()
+// ---------- 证书同步到飞牛系统 HTTPS（单证书操作） ----------
+
+func (a *API) fnosStatus(w http.ResponseWriter, r *http.Request) {
+	ov, err := a.m.FNOSStatus(r.Context())
 	if err != nil {
 		api.WriteErr(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	a.m.Bus().Publish("cert", "info", "已执行飞牛系统证书同步")
+	api.WriteOK(w, ov)
+}
+
+type fnosPreparePayload struct {
+	CertID    string `json:"cert_id"`
+	TargetID  string `json:"target_id"`
+	ProbeHost string `json:"probe_host"`
+	ProbePort int    `json:"probe_port"`
+}
+
+func (a *API) fnosPrepare(w http.ResponseWriter, r *http.Request) {
+	var p fnosPreparePayload
+	if err := api.DecodeJSON(r, &p); err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	res, err := a.m.FNOSPrepare(r.Context(), p.CertID, p.TargetID, p.ProbeHost, p.ProbePort)
+	if err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
 	api.WriteOK(w, res)
+}
+
+type fnosDeployPayload struct {
+	fnosPreparePayload
+	PlanID string `json:"plan_id"`
+}
+
+func (a *API) fnosDeploy(w http.ResponseWriter, r *http.Request) {
+	var p fnosDeployPayload
+	if err := api.DecodeJSON(r, &p); err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	res, err := a.m.FNOSDeploy(r.Context(), p.CertID, p.TargetID, p.ProbeHost, p.ProbePort, p.PlanID)
+	if err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	api.WriteOK(w, res)
+}
+
+type fnosAutoPayload struct {
+	CertID  string `json:"cert_id"`
+	Enabled bool   `json:"enabled"`
+}
+
+func (a *API) fnosAuto(w http.ResponseWriter, r *http.Request) {
+	var p fnosAutoPayload
+	if err := api.DecodeJSON(r, &p); err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if err := a.m.FNOSSetAuto(p.CertID, p.Enabled); err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	api.WriteOK(w, map[string]bool{"auto_deploy": p.Enabled})
+}
+
+type fnosResetPayload struct {
+	CertID string `json:"cert_id"`
+}
+
+func (a *API) fnosReset(w http.ResponseWriter, r *http.Request) {
+	var p fnosResetPayload
+	if err := api.DecodeJSON(r, &p); err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if err := a.m.FNOSReset(p.CertID); err != nil {
+		api.WriteErr(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	api.WriteOK(w, map[string]bool{"reset": true})
 }
 
 type defaultPayload struct {

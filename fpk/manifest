@@ -1,7 +1,7 @@
 appname="fngate"
-version="1.2.7"
+version="1.2.8"
 display_name="路由网关"
-desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（飞牛证书导入、ACME 泛域名申请与自动续期、手动上传）。三模块统一管理，原生应用，无需 Docker。"
+desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（ACME 泛域名申请与自动续期、手动上传、一键同步到飞牛系统 HTTPS）。三模块统一管理，原生应用，无需 Docker。"
 source="thirdparty"
 platform="all"
 
@@ -18,4 +18,4 @@ desktop_uidir="ui"
 desktop_applaunchname="fngate.main"
 disable_authorization_path=true
 
-changelog="1.2.7 修复反向代理下 WebSocket 握手返回 502（ErrorHandler 报 can't switch protocols using non-Hijacker）：状态记录包装层改为透传 Hijacker/Flusher/Pusher/ReaderFrom，并补 WebSocket 端到端回归测试。1.2.6 非本机内部 IP 提示与 fake-ip 修正；1.2.5 挑剔固件 402 兼容；1.0.0 首个版本。"
+changelog="1.2.8 证书管理方向反转：移除飞牛证书只读导入，改为把本应用的证书一键同步到飞牛系统 HTTPS（root 守护 + Unix Socket + 备份回滚 + TLS 验证），支持续期后自动重新同步并展示每证书同步状态。1.2.7 修复反向代理下 WebSocket 握手返回 502（透传 Hijacker/Flusher/Pusher/ReaderFrom）。1.2.6 非本机内部 IP 提示与 fake-ip 修正；1.2.5 挑剔固件 402 兼容；1.0.0 首个版本。"

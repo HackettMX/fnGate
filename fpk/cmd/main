@@ -123,6 +123,51 @@ grant_bind_cap() {
   return 0
 }
 
+# root 侧受限证书部署守护：只监听本地 Unix Socket，供降权后的主应用
+# 执行「同步证书到飞牛系统 HTTPS」。目录固定、参数固定，不接收前端路径。
+CERT_DEPLOYER_RUN="/run/fngate-cert-deployer"
+CERT_DEPLOYER_SOCK="${CERT_DEPLOYER_RUN}/control.sock"
+CERT_DEPLOYER_PID="${DATA_DIR}/cert-deployer.pid"
+
+# 组 GID：socket 只允许 root 与应用组连接；取应用用户主组。
+cert_deployer_gid() {
+  id -g "$APP_USER" 2>/dev/null || true
+}
+
+start_cert_deployer() {
+  [ "$(id -u 2>/dev/null)" = "0" ] || return 0
+  local b="$1" gid
+  gid="$(cert_deployer_gid)"
+  if [ -z "$gid" ] || [ "$gid" -le 0 ] 2>/dev/null; then
+    log "WARN: 无法确定应用组 GID，跳过证书部署守护（系统证书同步不可用）"
+    return 0
+  fi
+  # runDir 必须 root 所有且不可被组/其它写（守护启动时会再次强校验）。
+  mkdir -p "$CERT_DEPLOYER_RUN" 2>/dev/null || true
+  chown root:root "$CERT_DEPLOYER_RUN" 2>/dev/null || true
+  chmod 755 "$CERT_DEPLOYER_RUN" 2>/dev/null || true
+  setsid "$b" --cert-deployer --socket "$CERT_DEPLOYER_SOCK" --rundir "$CERT_DEPLOYER_RUN" --group-gid "$gid" \
+    >>"$LOG_FILE" 2>&1 &
+  local dpid=$!
+  echo "$dpid" >"$CERT_DEPLOYER_PID"
+  log "cert-deployer started pid=$dpid (gid=$gid)"
+}
+
+stop_cert_deployer() {
+  local pid
+  [ -f "$CERT_DEPLOYER_PID" ] || return 0
+  pid="$(head -n 1 "$CERT_DEPLOYER_PID" 2>/dev/null | tr -dc '0-9')"
+  if [ -n "$pid" ]; then
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$CERT_DEPLOYER_PID" "$CERT_DEPLOYER_SOCK" 2>/dev/null || true
+}
+
 # 决定以什么身份跑服务进程。
 # 优先：root 启动 → 授予绑定能力 → runuser 降权为应用用户（进程不是 root，但能绑 80/443）。
 # 任一环节不满足就退回 root 直接运行：功能不缺失，只是权限没降下来。
@@ -186,14 +231,9 @@ start() {
     chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR" 2>/dev/null || true
   fi
 
-  # root 侧 helper：把飞牛系统证书（含私钥）复制成应用私有快照。
-  # 固定参数、固定白名单路径，不接收任何来自前端的文件路径；失败不影响主服务启动。
-  if [ "$(id -u 2>/dev/null)" = "0" ]; then
-    FNGATE_APP_USER="$APP_USER" FNGATE_DATA_DIR="$DATA_DIR" \
-      "$app_bin" --cert-sync --data "$DATA_DIR" >>"$LOG_FILE" 2>&1 ||
-      log "WARN: 飞牛证书同步未成功（可能不是 fnOS 或尚无系统证书），可在证书管理页手动上传"
-    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR/certs" "$DATA_DIR/secrets" 2>/dev/null || true
-  fi
+  # root 侧证书部署守护必须在主服务之前起来（降权后应用要连它的 Socket）。
+  # 守护启动失败不阻塞主服务：只是「同步到飞牛」不可用，其它功能正常。
+  start_cert_deployer "$app_bin" || true
 
   prepare_launch "$app_root" "$app_bin"
 
@@ -232,6 +272,7 @@ start() {
 stop() {
   if ! is_running; then
     rm -f "$PID_FILE"
+    stop_cert_deployer
     return 0
   fi
 
@@ -254,6 +295,7 @@ stop() {
   fi
 
   rm -f "$PID_FILE"
+  stop_cert_deployer
   log "stopped"
   return 0
 }
@@ -270,11 +312,12 @@ case "${1:-}" in
   start) start ;;
   stop) stop ;;
   status) status ;;
-  cert-sync)
-    # 供管理员手工刷新系统证书快照（需 root 身份）。
+  cert-deployer)
+    # 供管理员手工重启证书部署守护（需 root）。
+    [ "$(id -u 2>/dev/null)" = "0" ] || fail "此命令需 root 身份"
     b="$(resolve_bin)" || fail "找不到可运行的二进制"
-    FNGATE_APP_USER="$APP_USER" FNGATE_DATA_DIR="$DATA_DIR" "$b" --cert-sync --data "$DATA_DIR"
-    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR/certs" "$DATA_DIR/secrets" 2>/dev/null || true
+    stop_cert_deployer
+    start_cert_deployer "$b"
     ;;
   *) fail "未知命令：${1:-}" ;;
 esac
