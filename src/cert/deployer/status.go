@@ -42,6 +42,69 @@ type state struct {
 	Gateway  *fileSnapshot
 }
 
+// planCache 保存最近若干次预检生成的 journal。
+//
+// 用户在界面上确认的是「某一次预检的具体内容」，所以部署以这份 journal 为准，
+// 而不是重新计算一遍计划再比对哈希：重新计算会把「文件刚刚被外部读取/改写」
+// 变成一句无法解释的「系统证书或配置已变化」。系统是否被改动仍由
+// verifyPristine（逐文件字节/权限复核）与数据库 CAS 保证，安全性不降低。
+type planCache struct {
+	mu    sync.Mutex
+	ttl   time.Duration
+	items map[string]*cachedPlan
+	order []string
+}
+
+type cachedPlan struct {
+	j  *journal
+	at time.Time
+}
+
+var prepared = &planCache{ttl: 15 * time.Minute, items: map[string]*cachedPlan{}}
+
+func (c *planCache) put(j *journal) {
+	if j == nil || j.PlanID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[j.PlanID]; !ok {
+		c.order = append(c.order, j.PlanID)
+	}
+	c.items[j.PlanID] = &cachedPlan{j: j, at: time.Now()}
+	for len(c.order) > 8 {
+		delete(c.items, c.order[0])
+		c.order = c.order[1:]
+	}
+}
+
+func (c *planCache) get(id string) (*journal, bool) {
+	if id == "" {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	it, ok := c.items[id]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(it.at) > c.ttl {
+		delete(c.items, id)
+		return nil, false
+	}
+	return it.j, true
+}
+
+// drop 在计划执行完成后丢弃，避免同一份确认结果被重复使用。
+func (c *planCache) drop(id string) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.items, id)
+}
+
 // journal 是部署事务的完整记录，落盘于 active.json 供崩溃恢复。
 type journal struct {
 	Files          []*fileSnapshot `json:"files"`

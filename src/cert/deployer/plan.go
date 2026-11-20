@@ -194,6 +194,8 @@ func (e *Engine) Prepare(input PrepareInput, running bool) (*PrepareResult, erro
 	if err != nil {
 		return nil, err
 	}
+	// 记住这份计划：用户确认后，/deploy 直接按它执行。
+	prepared.put(j)
 	return &PrepareResult{
 		PlanID: j.PlanID, Target: publicTarget(t, true, input.ProbeHost, nil),
 		Fingerprint: next.Fingerprint, ValidTo: j.ValidTo,

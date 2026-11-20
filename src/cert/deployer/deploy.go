@@ -2,6 +2,7 @@ package deployer
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,12 +25,26 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 		mu.Unlock()
 	}()
 
-	j, _, _, err := e.plan(input)
-	if err != nil {
-		return nil, err
-	}
-	if input.PlanID == "" || input.PlanID != j.PlanID {
-		return nil, fail(CodeConflict)
+	// 优先使用预检生成的那份计划：用户确认的就是它。
+	// 只有计划已过期/守护重启过时才重新计算，并解释为什么对不上。
+	var j *journal
+	if cached, ok := prepared.get(input.PlanID); ok {
+		j = cached
+	} else {
+		recomputed, _, _, err := e.plan(input)
+		if err != nil {
+			return nil, err
+		}
+		if input.PlanID == "" {
+			return nil, failDetail(CodeConflict, "plan",
+				"缺少 plan_id：请先预检，再确认同步（预检与部署不能分两次请求）")
+		}
+		if recomputed.PlanID != input.PlanID {
+			return nil, failDetail(CodeConflict, "plan",
+				fmt.Sprintf("预检计划已失效（部署服务可能重启过，或系统配置在预检后被改动）；"+
+					"当前计划 %s，你确认的计划 %s，请重新预检", shortPlanID(recomputed.PlanID), shortPlanID(input.PlanID)))
+		}
+		j = recomputed
 	}
 	if err := e.ensureStateDir(); err != nil {
 		return nil, err
@@ -45,14 +60,17 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 	}
 	stage := StageMetadata
 
-	// 2. 二次校验所有文件与网关未变化。
+	// 2. 二次校验所有文件与网关未变化。此阶段尚未写任何东西，
+	//    失败只丢弃计划、不触发回滚（回滚会把外部改动一并覆盖回去）。
 	if err := e.verifyPristine(j); err != nil {
-		return e.rollbackWithFailure(j, stage, err)
+		_ = os.Remove(active)
+		return nil, err
 	}
 
-	// 3. CAS 更新数据库行。
+	// 3. CAS 更新数据库行。CAS 失败说明该行未被动过，同样无需回滚。
 	if err := compareAndSwapRow(j.RowBefore, j.RowAfter); err != nil {
-		return e.rollbackWithFailure(j, stage, err)
+		_ = os.Remove(active)
+		return nil, e.metadataConflict(j)
 	}
 
 	// 4. 原子写所有证书/索引文件。
@@ -96,6 +114,7 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 	}
 	_ = os.Rename(active, filepath.Join(e.StateDir, "backup-"+newUUID()+".json"))
 	e.pruneBackups()
+	prepared.drop(j.PlanID)
 
 	return &DeployResult{
 		OK: true, Fingerprint: j.NewFingerprint, ValidTo: j.ValidTo,
@@ -104,18 +123,98 @@ func (e *Engine) Deploy(input PrepareInput, running bool) (*DeployResult, error)
 }
 
 // verifyPristine 确认当前文件与网关仍等于 plan 时的原始快照。
+// 任何一处与计划不符都附上具体事实（哪个文件、字节数、权限属主），
+// 而不是笼统地说「系统证书或配置已变化」。
 func (e *Engine) verifyPristine(j *journal) error {
 	for _, f := range j.Files {
 		cur, err := e.snapshot(f.File, f.IsCert)
-		if err != nil || !sameContent(f.File, cur.Content, f.Content) {
-			return fail(CodeConflict)
+		if err != nil {
+			d := detailOf(err)
+			if d == "" {
+				d = "已不可安全读取"
+			}
+			return failDetail(CodeConflict, "pristine",
+				fmt.Sprintf("%s 在预检之后发生变化：%s", f.File, d))
+		}
+		if !sameContent(f.File, cur.Content, f.Content) {
+			return failDetail(CodeConflict, "pristine",
+				fmt.Sprintf("%s 在预检之后被改写（预检 %d 字节 → 现在 %d 字节），已中止以免覆盖其它修改；"+
+					"若是刚续期或重新导入过证书，请重新预检", f.File, len(mustB64(f.Content)), len(mustB64(cur.Content))))
+		}
+		if cur.Mode != f.Mode || cur.UID != f.UID || cur.GID != f.GID {
+			return failDetail(CodeConflict, "pristine",
+				fmt.Sprintf("%s 的权限/属主在预检之后变化（%04o %d:%d → %04o %d:%d），已中止",
+					f.File, f.Mode, f.UID, f.GID, cur.Mode, cur.UID, cur.GID))
 		}
 	}
 	cur, err := e.snapshot(e.GatewayPath, false)
-	if err != nil || !sameContent(e.GatewayPath, cur.Content, j.Gateway.Content) {
-		return fail(CodeConflict)
+	if err != nil {
+		return failDetail(CodeConflict, "pristine", fmt.Sprintf("%s 在预检之后不可读", e.GatewayPath))
+	}
+	if !sameContent(e.GatewayPath, cur.Content, j.Gateway.Content) {
+		return failDetail(CodeConflict, "pristine",
+			fmt.Sprintf("%s 在预检之后被改写（%d 字节 → %d 字节），说明飞牛的证书服务配置刚被改动过；"+
+				"请重新预检（若刚在飞牛里改过证书绑定，这是预期行为）",
+				e.GatewayPath, len(mustB64(j.Gateway.Content)), len(mustB64(cur.Content))))
 	}
 	return nil
+}
+
+// metadataConflict 说明数据库行在预检之后被改了哪些字段（CAS 未命中）。
+func (e *Engine) metadataConflict(j *journal) error {
+	cur, err := e.currentRow(rowString(j.RowBefore, "id"))
+	if err != nil {
+		return failDetail(CodeConflict, "metadata",
+			fmt.Sprintf("证书行 %s 在预检之后被改动（无法读取当前值：%v），请重新预检", rowString(j.RowBefore, "id"), err))
+	}
+	changed := []string{}
+	for k := range j.RowBefore {
+		if canonicalJSON(j.RowBefore[k]) != canonicalJSON(cur[k]) {
+			changed = append(changed, fmt.Sprintf("%s：%s → %s", k, trunc(rowText(j.RowBefore[k]), 48), trunc(rowText(cur[k]), 48)))
+			if len(changed) >= 4 {
+				break
+			}
+		}
+	}
+	sort.Strings(changed)
+	if len(changed) == 0 {
+		return failDetail(CodeConflict, "metadata",
+			fmt.Sprintf("证书行 %s 在预检之后被改动（字段值一致，可能是写入时序冲突），请重新预检",
+				rowString(j.RowBefore, "id")))
+	}
+	return failDetail(CodeConflict, "metadata",
+		fmt.Sprintf("证书行 %s 在预检之后被改动：%s；请重新预检", rowString(j.RowBefore, "id"), strings.Join(changed, "；")))
+}
+
+// currentRow 读取某张证书的当前数据库行。
+func (e *Engine) currentRow(id string) (certRow, error) {
+	st, err := e.read()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range st.Rows {
+		if rowString(r, "id") == id {
+			return r, nil
+		}
+	}
+	return nil, fmt.Errorf("行 %s 不存在", id)
+}
+
+func shortPlanID(id string) string {
+	if len(id) > 10 {
+		return id[:10]
+	}
+	if id == "" {
+		return "（空）"
+	}
+	return id
+}
+
+func trunc(s string, max int) string {
+	if r := []rune(s); len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
 }
 
 // verifyConsistency 确认部署后文件、数据库、网关全部符合新状态。
@@ -123,7 +222,8 @@ func (e *Engine) verifyConsistency(j *journal) error {
 	for _, f := range j.Files {
 		cur, err := e.snapshot(f.File, f.IsCert)
 		if err != nil || !sameContent(f.File, cur.Content, f.Next) {
-			return fail(CodeConflict)
+			return failDetail(CodeConflict, "consistency",
+				fmt.Sprintf("写入后复核失败：%s 的内容与预期不一致", f.File))
 		}
 	}
 	rowsRaw, err := psql("SELECT coalesce(json_agg(row_to_json(c) ORDER BY c.id),'[]'::json)::text FROM public.cert c;")
