@@ -109,8 +109,14 @@ func (e *Engine) plan(input PrepareInput) (*journal, *targetInfo, *parsedCert, e
 		}
 		if x.fullchain {
 			p, err := inspectCertificate(mustB64(snap.Content), []byte(input.PrivateKeyPEM), true)
-			if err != nil || !sameFingerprint(p.Fingerprint, t.Parsed.Fingerprint) {
-				return nil, nil, nil, fail(CodeIncompatible)
+			if err != nil {
+				return nil, nil, nil, failDetail(CodeIncompatible, "fullchain",
+					fmt.Sprintf("现有链文件 %s 无法解析：%s", x.path, detailOf(err)))
+			}
+			if !sameFingerprint(p.Fingerprint, t.Parsed.Fingerprint) {
+				return nil, nil, nil, failDetail(CodeIncompatible, "fullchain",
+					fmt.Sprintf("现有链文件 %s 的叶子证书（%s）与数据库记录的证书（%s）不一致，"+
+						"说明 fnOS 里这张证书的文件已被其它操作改动，请重新导入后再同步", x.path, p.Fingerprint, t.Parsed.Fingerprint))
 			}
 		}
 		files = append(files, &fileSnapshot{File: x.path, Content: snap.Content, Mode: snap.Mode,

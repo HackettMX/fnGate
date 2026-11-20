@@ -126,11 +126,11 @@ func TestSameFingerprintNormalizes(t *testing.T) {
 
 func TestValidDomainName(t *testing.T) {
 	cases := map[string]bool{
-		"nas.example.com": true,
-		"*.example.com":   true,
+		"nas.example.com":  true,
+		"*.example.com":    true,
 		"-bad.example.com": false,
-		"example":         false, // 参考实现的 domainPattern 要求至少一个点
-		"a_b.example.com": false,
+		"example":          false, // 参考实现的 domainPattern 要求至少一个点
+		"a_b.example.com":  false,
 	}
 	for in, want := range cases {
 		if got := validDomainName(in); got != want {
@@ -200,5 +200,140 @@ func TestFailDetailCarriesDiagnosis(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "custom") {
 		t.Fatalf("错误信息未带诊断：%s", got)
+	}
+}
+
+// signedPair 生成由 ca 签发的站点证书，用于构造多级链。
+func signedPair(t *testing.T, domains []string, isCA bool, notAfter time.Time) ([]byte, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: domains[0]},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              domains,
+		IsCA:                  isCA,
+		BasicConstraintsValid: isCA,
+	}
+	parent := tmpl
+	if isCA {
+		tmpl.KeyUsage |= x509.KeyUsageCertSign
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+}
+
+// fnOS 的导入路径可能保留 BOM、openssl 的 "Bag Attributes" 前缀，
+// 或在私钥文件前写一个 EC PARAMETERS 块。这些都不影响 nginx 加载。
+func TestInspectToleratesBOMAndBagAttributes(t *testing.T) {
+	cp, kp := selfSigned(t, []string{"nas.example.com"})
+	noisyCert := append([]byte("\ufeffBag Attributes\n    friendlyName: nas.example.com\n    localKeyID: 01 02\n"),
+		cp...)
+	noisyKey := append(pem.EncodeToMemory(&pem.Block{Type: "EC PARAMETERS", Bytes: []byte{0x06, 0x08}}), kp...)
+	p, err := inspectCertificate(noisyCert, noisyKey, false)
+	if err != nil {
+		t.Fatalf("应容忍 BOM / Bag Attributes / EC PARAMETERS：%v", err)
+	}
+	if len(p.Domains) != 1 || p.Domains[0] != "nas.example.com" {
+		t.Fatalf("域名解析不对：%v", p.Domains)
+	}
+	if !strings.HasPrefix(string(p.ChainPEM), "-----BEGIN CERTIFICATE-----") {
+		t.Fatalf("重编码应去掉前置文本")
+	}
+}
+
+// 证书文件里混入私钥块（合并的 pem）也只取 CERTIFICATE 块。
+func TestInspectIgnoresKeyInsideCertFile(t *testing.T) {
+	cp, kp := selfSigned(t, []string{"nas.example.com"})
+	if _, err := inspectCertificate(append(append([]byte{}, cp...), kp...), kp, false); err != nil {
+		t.Fatalf("证书文件里混入私钥不应报错：%v", err)
+	}
+}
+
+// 链顺序颠倒（CA 在前）时按签发关系重排，叶子必须排在首位。
+func TestInspectAcceptsReversedChain(t *testing.T) {
+	caCert, caKey := signedPair(t, []string{"Test Root CA"}, true, time.Now().Add(24*time.Hour))
+	_ = caKey
+	// 用 CA 的私钥签发叶子：重新解析 CA 证书与私钥。
+	caBlk, _ := pem.Decode(caCert)
+	ca, err := x509.ParseCertificate(caBlk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caSigner, err := x509.ParseECPrivateKey(func() []byte {
+		b, _ := pem.Decode(caKey)
+		return b.Bytes
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano() + 1),
+		Subject:      pkix.Name{CommonName: "*.example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"*.example.com", "example.com"},
+	}
+	if ca.Subject.CommonName == "" {
+		t.Fatal("CA 证书缺少 Subject")
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &leafKey.PublicKey, caSigner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	leafKeyDER, _ := x509.MarshalECPrivateKey(leafKey)
+
+	p, err := inspectCertificate(append(append([]byte{}, caCert...), leafPEM...), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: leafKeyDER}), false)
+	if err != nil {
+		t.Fatalf("CA 在前的链应被接受：%v", err)
+	}
+	if p.Leaf.DNSNames[0] != "*.example.com" {
+		t.Fatalf("叶子识别错误：%v", p.Leaf.DNSNames)
+	}
+	if len(p.Chain) != 2 || p.Chain[0] != p.Leaf {
+		t.Fatalf("链顺序未重排：%d 级", len(p.Chain))
+	}
+}
+
+// 私钥不匹配时要指出「指向了不同证书的文件」，而不是只说校验失败。
+func TestInspectKeyMismatchDetail(t *testing.T) {
+	cp, _ := selfSigned(t, []string{"a.example.com"})
+	_, other := selfSigned(t, []string{"b.example.com"})
+	_, err := inspectCertificate(cp, other, false)
+	if err == nil {
+		t.Fatal("不匹配的私钥必须被拒绝")
+	}
+	if d := detailOf(err); !strings.Contains(d, "不匹配") {
+		t.Fatalf("诊断未说明配对失败：%q", d)
+	}
+}
+
+// 过期证书给出可读原因（含日期），便于判断是否只是系统里的旧证书。
+func TestInspectExpiredDetail(t *testing.T) {
+	cp, kp := signedPair(t, []string{"old.example.com"}, false, time.Now().Add(-24*time.Hour))
+	_, err := inspectCertificate(cp, kp, false)
+	if err == nil {
+		t.Fatal("过期证书应被拒绝")
+	}
+	if d := detailOf(err); !strings.Contains(d, "有效期") {
+		t.Fatalf("诊断未说明有效期问题：%q", d)
+	}
+	if _, err := inspectCertificate(cp, kp, true); err != nil {
+		t.Fatalf("allowExpired 时过期证书应可读取：%v", err)
 	}
 }

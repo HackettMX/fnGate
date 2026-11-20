@@ -142,7 +142,13 @@ func (e *Engine) target(row certRow, st *state) (*targetInfo, error) {
 	}
 	parsed, err := inspectCertificate(mustB64(certSnap.Content), mustB64(keySnap.Content), true)
 	if err != nil {
-		return nil, failDetail(CodeInvalid, "pem", "现有证书链/私钥解析或配对校验失败（链完整性、SAN 类型、密钥匹配）")
+		d := detailOf(err)
+		if d == "" {
+			d = "证书或私钥内容无法解析"
+		}
+		return nil, failDetail(CodeInvalid, "pem",
+			fmt.Sprintf("certificate=%s（%d 字节），private_key=%s（%d 字节）：%s",
+				certPath, len(mustB64(certSnap.Content)), keyPath, len(mustB64(keySnap.Content)), d))
 	}
 
 	names := cleanDomains(splitDomains(rowString(row, "san", "domain")))
