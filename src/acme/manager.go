@@ -2,7 +2,6 @@ package acme
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -72,31 +71,6 @@ func New(d Deps) *Manager {
 
 func (m *Manager) Close() {
 	m.once.Do(func() { close(m.done) })
-}
-
-// autoRedeployFNOS 在续期成功后异步把新证书重新同步到飞牛系统 HTTPS。
-// 只在该证书此前成功部署过、且开启了自动同步时生效；失败仅告警，不影响续期。
-func (m *Manager) autoRedeployFNOS(certID string) {
-	select {
-	case <-m.done:
-		return
-	default:
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := m.certs.FNOSRedeployAfterRenew(ctx, certID); err != nil {
-			m.publish("warn", "续期后自动同步到飞牛失败：%v", err)
-		}
-	}()
-	select {
-	case <-done:
-	case <-m.done:
-		cancel()
-	case <-ctx.Done():
-	}
 }
 
 func (m *Manager) worker() {
@@ -603,11 +577,6 @@ func (m *Manager) runOrder(id string) {
 			return nil
 		})
 		m.appendLog(id, "续期成功，cert_id 保持不变，引用方零重启生效")
-		// 若这张证书此前已成功同步到飞牛系统 HTTPS 且开启了自动同步，
-		// 用新证书重新部署。异步执行：部署涉及系统服务重启，不能阻塞续期工作流。
-		if m.certs != nil {
-			go m.autoRedeployFNOS(certID)
-		}
 	} else {
 		nc, err := m.certs.AddACME(strings.Join(o.Domains, ", "), certPEM, keyPEM, meta)
 		if err != nil {
