@@ -256,6 +256,7 @@
         function attr(n) { return t.getAttribute && t.getAttribute(n); }
         try {
           // 服务商
+          var act = attr('data-act');
           if (act === 'add') { providerModal(null); return; }
           if (attr('data-edit')) { var p1 = find(attr('data-edit')); if (p1) providerModal(p1); return; }
           if (attr('data-zones')) { var p2 = find(attr('data-zones')); if (p2) zonesModal(p2); return; }
