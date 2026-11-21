@@ -28,22 +28,28 @@ type proxyEntry struct {
 // httputil.ReverseProxy 就会报 "can't switch protocols using non-Hijacker"，
 // 返回 502（表现为前端 WebSocket 握手失败）。Flusher/Pusher/ReaderFrom
 // 同为可选接口，缺一个就会让对应的流式/HTTP2/零拷贝能力静默退化。
+//
+// 幂等必须用独立的 wrote 标志，不能用 status != 0：status 初始化为 200
+// 作为默认记录值，若拿它判幂等，所有 WriteHeader(400/404/502) 都会被吞，
+// 客户端只会收到 200（典型表现：WebSocket 握手报 Unexpected response code: 200）。
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	wrote  bool
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
-	if r.status != 0 {
+	if r.wrote {
 		return
 	}
+	r.wrote = true
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
 
 func (r *statusRecorder) Write(b []byte) (int, error) {
-	if r.status == 0 {
-		r.status = http.StatusOK
+	if !r.wrote {
+		r.WriteHeader(http.StatusOK)
 	}
 	return r.ResponseWriter.Write(b)
 }
@@ -53,7 +59,8 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, http.ErrNotSupported
 	}
-	if r.status == 0 {
+	if !r.wrote {
+		r.wrote = true
 		r.status = http.StatusSwitchingProtocols
 	}
 	return h.Hijack()

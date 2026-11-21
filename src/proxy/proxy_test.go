@@ -317,6 +317,68 @@ func TestWebSocketProxyEndToEnd(t *testing.T) {
 	}
 }
 
+// 回归：statusRecorder 初始化为 200，但 WriteHeader 用 status != 0 判幂等，
+// 导致所有错误码（400/404/502）被吞，客户端只看到 200。
+// 典型表现：WebSocket 握手拿到 200 而不是真实的 400/502/101。
+func TestStatusRecorderDoesNotSwallowStatusCodes(t *testing.T) {
+	rec := &statusRecorder{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK}
+	rec.WriteHeader(http.StatusBadRequest)
+	if rec.status != http.StatusBadRequest {
+		t.Fatalf("WriteHeader(400) 被吞：期望 status=400，实际 %d", rec.status)
+	}
+}
+
+// 回归：路由未开启 WebSocket 时，带 Upgrade 的请求应明确返回 400，
+// 而不是被 statusRecorder 吞成 200（浏览器报 Unexpected response code: 200）。
+func TestWebSocketDisabledReturns400(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("WS 关闭时请求不应到达后端")
+	}))
+	defer backend.Close()
+	u, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t)
+	const lid = "listener-ws-off"
+	if err := m.store.Update(func(s *core.State) error {
+		s.Listeners = append(s.Listeners, core.Listener{
+			ID: lid, Name: "ws-off", Port: 0, Protocol: "http", Bind: "127.0.0.1", Enabled: true,
+		})
+		s.Routes = append(s.Routes, core.Route{
+			ID: "r-ws-off", ListenerID: lid, Name: "ws-off", MatchType: "prefix",
+			Backend: u.Host, Websocket: false, TimeoutMS: 5000, Enabled: true,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if states := m.Apply(); len(states) != 1 || !states[0].Active {
+		t.Fatalf("入口启动失败: %+v", states)
+	}
+	m.mu.RLock()
+	rt := m.runtimes[lid]
+	m.mu.RUnlock()
+
+	conn, err := net.DialTimeout("tcp", rt.ln.Addr().String(), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = fmt.Fprintf(conn, "GET /api/notifications/ws HTTP/1.1\r\n"+
+		"Host: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\n\r\n", rt.ln.Addr().String(), "dGhlIHNhbXBsZSBub25jZQ==")
+
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("未读到响应: %v", err)
+	}
+	if !strings.Contains(line, "400") {
+		t.Fatalf("WS 关闭时应返回 400，实际 %q", strings.TrimSpace(line))
+	}
+}
+
 func wsAccept(key string) string {
 	h := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
 	return base64.StdEncoding.EncodeToString(h[:])

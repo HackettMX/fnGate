@@ -1,5 +1,5 @@
 appname="fngate"
-version="1.2.20"
+version="1.2.21"
 display_name="路由网关"
 desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（ACME 泛域名申请与自动续期、手动上传、自签证书）。三模块统一管理，原生应用，无需 Docker。"
 source="thirdparty"
@@ -18,4 +18,4 @@ desktop_uidir="ui"
 desktop_applaunchname="fngate.main"
 disable_authorization_path=true
 
-changelog="1.2.20 修复应用图标白边（背景未裁干净）并同步更新 README 与主图标；1.2.19 修复 DNS 服务商页面点击报 act is not defined 导致所有按钮失效的问题；更换应用图标为飞牛原生风格（大面积六边形，圆润饱满）；1.2.18 移除旧版遗留的证书部署守护主动清理逻辑；1.2.17 移除飞牛证书导入（--cert-sync），证书库只管理本应用申请、上传、自签的证书，完全不读取或修改飞牛系统证书；移除无用的 DNS 解析查询与一键体检；界面重构（更简洁的卡片与表格、移动端抽屉菜单与表格卡片化）；修复定时任务 panic 静默、EventBus 竞态、连接池泄漏、TCP 转发悬挂 goroutine 等代码缺陷。1.2.16 移除同步到飞牛系统 HTTPS 的 root 守护；1.2.7 修复反向代理 WebSocket 502。"
+changelog="1.2.21 修复反向代理状态记录 bug：错误响应码（400/404/502）被误吞成 200，导致 WebSocket 握手失败时只报 Unexpected response code: 200 而看不到真实原因；1.2.20 修复应用图标白边（背景未裁干净）并同步更新 README 与主图标；1.2.19 修复 DNS 服务商页面点击报 act is not defined 导致所有按钮失效的问题；更换应用图标为飞牛原生风格（大面积六边形，圆润饱满）；1.2.18 移除旧版遗留的证书部署守护主动清理逻辑；1.2.17 移除飞牛证书导入（--cert-sync），证书库只管理本应用申请、上传、自签的证书，完全不读取或修改飞牛系统证书；移除无用的 DNS 解析查询与一键体检；界面重构（更简洁的卡片与表格、移动端抽屉菜单与表格卡片化）；修复定时任务 panic 静默、EventBus 竞态、连接池泄漏、TCP 转发悬挂 goroutine 等代码缺陷。1.2.16 移除同步到飞牛系统 HTTPS 的 root 守护；1.2.7 修复反向代理 WebSocket 502。"
