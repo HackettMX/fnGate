@@ -159,37 +159,7 @@ prepare_launch() {
   log "已授予 cap_net_bind_service，降权为 ${APP_USER} 运行"
 }
 
-# 1.2.8–1.2.15 曾安装一个 root 侧「证书部署守护」(--cert-deployer)，负责把
-# 应用证书推送到飞牛系统 HTTPS。1.2.16 已彻底移除该功能，但升级安装不会自动
-# 停掉旧进程，这里在启动时清理一次：只结束该进程、删除它的 socket 与 PID 文件。
-# 不触碰飞牛系统证书、索引文件、数据库，也不重启任何系统服务。
-cleanup_legacy_deployer() {
-  [ "$(id -u 2>/dev/null)" = "0" ] || return 0
-  local pid_file="${DATA_DIR}/cert-deployer.pid"
-  local run_dir="/run/fngate-cert-deployer"
-  local pid
-  pid="$(head -n 1 "$pid_file" 2>/dev/null | tr -dc '0-9')"
-  if [ -z "$pid" ]; then
-    pid="$(pgrep -f -- '--cert-deployer' 2>/dev/null | head -n 1)"
-  fi
-  # 杀掉前按命令行复核，避免 PID 被系统复用时误杀无关进程。
-  if [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null &&
-     tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q -- '--cert-deployer'; then
-    kill -TERM "$pid" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.5
-    done
-    kill -KILL "$pid" 2>/dev/null || true
-    log "已停止旧版遗留的证书部署守护 pid=$pid"
-  fi
-  rm -f "$pid_file" "${run_dir}/control.sock" 2>/dev/null || true
-  rmdir "$run_dir" 2>/dev/null || true
-}
-
 start() {
-  cleanup_legacy_deployer
-
   if is_running; then
     log "already running, pid=$(read_pid)"
     return 0
