@@ -18,10 +18,7 @@ import (
 )
 
 // DNSAPI 是独立的「DNS 服务商」模块，挂载在 /api/dns/ 下。
-//
-// 物理上仍与 acme 同包（复用凭据校验、只读探测这些实现，避免两份判定标准），
-// 但对外是独立模块、独立路由前缀，前端也是独立页面。等 P2 引入域名解析时
-// 再把这些能力下沉到 dnsp 公共包。
+// 物理上仍与 acme 同包（复用凭据校验、只读探测这些实现，避免两份判定标准）。
 type DNSAPI struct{ m *Manager }
 
 func NewDNSModule(m *Manager) *DNSAPI { return &DNSAPI{m: m} }
@@ -36,10 +33,6 @@ func (a *DNSAPI) Routes() http.Handler {
 	mux.HandleFunc("POST /providers/{id}/verify", a.verifySaved)
 	mux.HandleFunc("GET /providers/{id}/zones", a.zones)
 	mux.HandleFunc("GET /types", a.types)
-	// 域名解析（P2）：查询与体检都是只读，不改任何 DNS 记录。
-	mux.HandleFunc("GET /resolvers", a.resolvers)
-	mux.HandleFunc("POST /resolve/query", a.resolveQuery)
-	mux.HandleFunc("POST /resolve/diagnose", a.diagnose)
 	return mux
 }
 
@@ -211,11 +204,7 @@ func (a *DNSAPI) markCheck(id string, res VerifyResult) {
 			}
 			st.DNSProviders[i].LastCheckAt = nowText()
 			st.DNSProviders[i].LastCheckOK = res.OK
-			if res.OK {
-				st.DNSProviders[i].LastCheckMsg = res.Message
-			} else {
-				st.DNSProviders[i].LastCheckMsg = res.Message
-			}
+			st.DNSProviders[i].LastCheckMsg = res.Message
 			return nil
 		}
 		return nil
@@ -588,76 +577,4 @@ func cloudflareClient(cred credentials) (*cloudflare.API, error) {
 		return cloudflare.New(key, email)
 	}
 	return nil, fmt.Errorf("Cloudflare 需要 DNS API Token，或同时提供邮箱与 Global API Key")
-}
-
-// ---------- 域名解析（P2，只读） ----------
-
-type resolveQueryPayload struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`
-	Servers []string `json:"servers"`
-	Follow  *bool    `json:"follow"`
-}
-
-type resolveDiagnosePayload struct {
-	Domain  string   `json:"domain"`
-	Servers []string `json:"servers"`
-}
-
-// resolvers 返回「服务器」多选的候选与默认勾选。
-func (a *DNSAPI) resolvers(w http.ResponseWriter, r *http.Request) {
-	st := a.m.store.Snapshot()
-	system := systemResolvers()
-	selected := effectiveResolvers(st.Settings.DNSResolvers)
-	if len(selected) > 5 {
-		selected = selected[:5]
-	}
-	api.WriteOK(w, map[string]interface{}{
-		"system":     system,
-		"custom":     st.Settings.DNSResolvers,
-		"presets":    presetResolvers,
-		"selected":   selected,
-		"types":      resolveRecordTypes,
-		"check_mode": st.Settings.DNSCheckMode,
-	})
-}
-
-// serverList 决定本次查询用哪些服务器：请求显式传入优先，否则用设置里的。
-func (a *DNSAPI) serverList(in []string) []string {
-	if len(in) > 0 {
-		return normalizeResolvers(in)
-	}
-	return effectiveResolvers(a.m.store.Snapshot().Settings.DNSResolvers)
-}
-
-func (a *DNSAPI) resolveQuery(w http.ResponseWriter, r *http.Request) {
-	var p resolveQueryPayload
-	if err := api.DecodeJSON(r, &p); err != nil {
-		api.WriteErr(w, http.StatusBadRequest, "%v", err)
-		return
-	}
-	follow := true
-	if p.Follow != nil {
-		follow = *p.Follow
-	}
-	res, err := runResolveQuery(p.Name, p.Type, a.serverList(p.Servers), follow)
-	if err != nil {
-		api.WriteErr(w, http.StatusBadRequest, "%v", err)
-		return
-	}
-	api.WriteOK(w, res)
-}
-
-func (a *DNSAPI) diagnose(w http.ResponseWriter, r *http.Request) {
-	var p resolveDiagnosePayload
-	if err := api.DecodeJSON(r, &p); err != nil {
-		api.WriteErr(w, http.StatusBadRequest, "%v", err)
-		return
-	}
-	res, err := runDiagnose(p.Domain, a.serverList(p.Servers))
-	if err != nil {
-		api.WriteErr(w, http.StatusBadRequest, "%v", err)
-		return
-	}
-	api.WriteOK(w, res)
 }

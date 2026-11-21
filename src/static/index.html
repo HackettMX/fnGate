@@ -33,7 +33,7 @@
         <div class="nav-group">证书</div>
         <button type="button" class="nav-item" data-page="cert"><span class="nav-ico">▣</span>证书管理</button>
         <button type="button" class="nav-item" data-page="acme"><span class="nav-ico">⟳</span>证书申请</button>
-        <button type="button" class="nav-item" data-page="dns"><span class="nav-ico">◇</span>域名解析</button>
+        <button type="button" class="nav-item" data-page="dns"><span class="nav-ico">◇</span>DNS 服务商</button>
         <div class="nav-group">系统</div>
         <button type="button" class="nav-item" data-page="settings"><span class="nav-ico">⚙</span>设置</button>
         <button type="button" class="nav-item" data-page="logs"><span class="nav-ico">≡</span>日志</button>
@@ -48,6 +48,7 @@
     <div class="main">
       <header class="topbar">
         <div class="topbar-title">
+          <button type="button" id="nav-toggle" class="nav-toggle" aria-label="打开菜单">☰</button>
           <h1 id="page-title">概览</h1>
           <p id="page-sub">网关、转发与证书的运行状态</p>
         </div>
@@ -59,6 +60,8 @@
       <main class="content" id="page"></main>
     </div>
   </div>
+
+  <div class="nav-backdrop" id="nav-backdrop"></div>
 
   <div id="modal-root"></div>
   <div id="toast-root" class="toast-root"></div>

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"fngate/api"
-	"fngate/cert"
 	"fngate/core"
 )
 
@@ -50,30 +49,6 @@ func main() {
 			}
 			fmt.Println("ok")
 			return
-		case "--cert-sync":
-			// root 侧 helper：只读取启动配置里固定的系统证书索引，
-			// 复制成应用私有快照后退出。绝不接收任意文件路径参数。
-			fs := flag.NewFlagSet("cert-sync", flag.ContinueOnError)
-			dataFlag := fs.String("data", "", "data directory")
-			if err := fs.Parse(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "参数错误:", err)
-				os.Exit(2)
-			}
-			cfg := LoadConfig(*dataFlag, 0)
-			res, err := cert.SyncSystem(cert.SyncOptions{
-				DataDir: cfg.DataDir, CertsDir: cfg.CertsDir, SecretsDir: cfg.SecretsDir,
-				ConfPaths: cfg.SysConfPaths, SSLRoots: cfg.SysSSLRoots,
-				AllowedRoots: cfg.SysAllowed, ChownUser: os.Getenv("FNGATE_APP_USER"),
-			})
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "同步飞牛证书失败:", err)
-				os.Exit(1)
-			}
-			fmt.Printf("ok found=%d written=%d skipped=%d sources=%v\n", res.Found, res.Written, res.Skipped, res.Sources)
-			for _, w := range res.Warnings {
-				fmt.Fprintln(os.Stderr, "warn:", w)
-			}
-			return
 		}
 	}
 
@@ -91,6 +66,10 @@ func main() {
 
 	bus := core.NewEventBus()
 	scheduler := core.NewScheduler()
+	scheduler.SetPanicHandler(func(name string, value interface{}, stack []byte) {
+		logger.Error("%s", core.PanicText(name, value, stack))
+		bus.Publish("system", "error", "定时任务 %s 异常，已自动恢复", name)
+	})
 	store, err := core.NewStore(cfg.StateFile, cfg.SecretsDir, bus)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "无法初始化配置:", err)
@@ -120,7 +99,16 @@ func main() {
 	bus.Publish("system", "info", "fnGate %s 已启动", version)
 
 	handler := withGatewayPrefix(srv.Handler(), cfg.GatewayPrefix)
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	// 管理 API 走本地 Unix Socket：给足写超时以兼容配置导出/导入，
+	// 但必须有上限，避免慢客户端长期占用连接与 goroutine。
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	errCh := make(chan error, 1)

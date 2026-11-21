@@ -99,7 +99,7 @@ type ACMEMeta struct {
 type Certificate struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
-	Source        string    `json:"source"` // manual | fnos | acme | selfsigned
+	Source        string    `json:"source"` // manual | acme | selfsigned
 	PrimaryDomain string    `json:"primary_domain"`
 	SANs          []string  `json:"sans"`
 	Issuer        string    `json:"issuer"`

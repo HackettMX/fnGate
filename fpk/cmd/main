@@ -216,14 +216,6 @@ start() {
     chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR" 2>/dev/null || true
   fi
 
-  # root 侧 helper：把飞牛系统证书（含私钥）复制成应用私有快照。
-  # 固定参数、固定白名单路径，不接收任何来自前端的文件路径；失败不影响主服务启动。
-  if [ "$(id -u 2>/dev/null)" = "0" ]; then
-    FNGATE_APP_USER="$APP_USER" FNGATE_DATA_DIR="$DATA_DIR" \
-      "$app_bin" --cert-sync --data "$DATA_DIR" >>"$LOG_FILE" 2>&1 ||
-      log "WARN: 飞牛证书同步未成功（可能不是 fnOS 或尚无系统证书），可在证书管理页手动上传"
-    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR/certs" "$DATA_DIR/secrets" 2>/dev/null || true
-  fi
 
   prepare_launch "$app_root" "$app_bin"
 
@@ -300,11 +292,5 @@ case "${1:-}" in
   start) start ;;
   stop) stop ;;
   status) status ;;
-  cert-sync)
-    # 供管理员手工刷新系统证书快照（需 root 身份）。
-    b="$(resolve_bin)" || fail "找不到可运行的二进制"
-    FNGATE_APP_USER="$APP_USER" FNGATE_DATA_DIR="$DATA_DIR" "$b" --cert-sync --data "$DATA_DIR"
-    chown -R "$APP_USER:$APP_GROUP" "$DATA_DIR/certs" "$DATA_DIR/secrets" 2>/dev/null || true
-    ;;
   *) fail "未知命令：${1:-}" ;;
 esac

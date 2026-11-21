@@ -32,9 +32,7 @@ func mountModules(s *api.Server, d *Deps) {
 
 	cm := cert.New(cert.Options{
 		DataDir: d.Cfg.DataDir, CertsDir: d.Cfg.CertsDir, SecretsDir: d.Cfg.SecretsDir,
-		SysConfPaths: d.Cfg.SysConfPaths, SysSSLRoots: d.Cfg.SysSSLRoots,
-		SysAllowedRoots: d.Cfg.SysAllowed,
-		Store:           d.Store, Bus: d.Bus, Logger: d.Logger,
+		Store: d.Store, Bus: d.Bus, Logger: d.Logger,
 	})
 	d.CertManager = cm
 	s.Mount("cert", cert.NewModule(cm))
@@ -42,9 +40,6 @@ func mountModules(s *api.Server, d *Deps) {
 	// 证书模块实现 proxy.CertResolver（结构化接口），注入后 HTTPS 握手
 	// 每次都会向证书库查询，续期落盘后无需重建监听即可生效。
 	px.SetCertResolver(cm)
-	if _, err := cm.ImportFromSnapshot(); err != nil {
-		d.Logger.Warn("导入飞牛证书快照失败: %v", err)
-	}
 
 	am := acme.New(acme.Deps{
 		Store: d.Store, Bus: d.Bus, Logger: d.Logger,

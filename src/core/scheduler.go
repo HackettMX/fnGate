@@ -1,6 +1,9 @@
 package core
 
 import (
+	"fmt"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -21,10 +24,19 @@ type Scheduler struct {
 	stopCh  chan struct{}
 	started bool
 	wg      sync.WaitGroup
+	onPanic func(name string, value interface{}, stack []byte)
 }
 
 func NewScheduler() *Scheduler {
 	return &Scheduler{stopCh: make(chan struct{})}
+}
+
+// SetPanicHandler 注册任务异常回调。关键任务（如证书续期）一旦 panic 会静默停止，
+// 必须留痕，否则用户只能等到证书过期才发现。
+func (s *Scheduler) SetPanicHandler(fn func(name string, value interface{}, stack []byte)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onPanic = fn
 }
 
 func (s *Scheduler) Every(name string, interval time.Duration, fn func()) {
@@ -94,8 +106,12 @@ func (s *Scheduler) run(t task) {
 func (s *Scheduler) safe(t task) {
 	defer func() {
 		if r := recover(); r != nil {
-			// 单个任务 panic 不能拖垮整个调度器；由各模块自行记录错误。
-			_ = r
+			s.mu.Lock()
+			fn := s.onPanic
+			s.mu.Unlock()
+			if fn != nil {
+				fn(t.name, r, debug.Stack())
+			}
 		}
 	}()
 	t.fn()
@@ -132,13 +148,18 @@ func TrimLines(lines []string, n int) []string {
 	return out
 }
 
+var secretPattern = regexp.MustCompile(`(?i)\b(api[_-]?token|api[_-]?key|access[_-]?key|secret[_-]?key|password|passwd|eab[_-]?hmac|hmac|token|secret)\b\s*[=:]\s*("[^"]*"|'[^']*'|\S+)`)
+
+// Sanitize 把日志中的凭据值替换为 ***，保留键名与上下文，既不泄露也不吞掉排障信息。
 func Sanitize(s string) string {
-	// 只做基础脱敏：避免把明显的凭据片段写进日志。
-	low := strings.ToLower(s)
-	for _, k := range []string{"token", "secret", "api_key", "password"} {
-		if strings.Contains(low, k) && strings.Contains(s, ":") {
-			return "[已脱敏]"
-		}
+	return secretPattern.ReplaceAllString(s, "${1}=***")
+}
+
+// panicText 把 recover 到的值与栈折叠成适合日志的描述。
+func PanicText(name string, value interface{}, stack []byte) string {
+	first := ""
+	if lines := strings.Split(string(stack), "\n"); len(lines) > 2 {
+		first = strings.TrimSpace(lines[2])
 	}
-	return s
+	return fmt.Sprintf("定时任务 %q 异常（已恢复，后续仍会执行）：%v；位置 %s", name, value, first)
 }

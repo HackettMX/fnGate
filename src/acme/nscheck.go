@@ -38,14 +38,14 @@ var fallbackResolvers = []string{"223.5.5.5:53", "119.29.29.29:53"}
 var (
 	resolverCacheMu sync.Mutex
 	resolverCache   []string
-	resolverCachAt  time.Time
+	resolverCacheAt time.Time
 )
 
 // systemResolvers 读取 /etc/resolv.conf 里的 nameserver 列表（带 1 分钟缓存）。
 func systemResolvers() []string {
 	resolverCacheMu.Lock()
 	defer resolverCacheMu.Unlock()
-	if len(resolverCache) > 0 && time.Since(resolverCachAt) < time.Minute {
+	if len(resolverCache) > 0 && time.Since(resolverCacheAt) < time.Minute {
 		return append([]string(nil), resolverCache...)
 	}
 	var out []string
@@ -59,7 +59,7 @@ func systemResolvers() []string {
 			}
 		}
 	}
-	resolverCache, resolverCachAt = out, time.Now()
+	resolverCache, resolverCacheAt = out, time.Now()
 	return append([]string(nil), out...)
 }
 

@@ -105,8 +105,16 @@ func (m *Manager) handleTCPConn(listenerID string, conn net.Conn) {
 			return
 		}
 	}
-	go func() { _, _ = io.Copy(up, br) }()
+	// 任一方向结束就关闭两端，避免半开连接留下悬挂 goroutine。
+	// Close 幂等由 sync.Once 保证；defer up.Close() 仍保留作最终兜底。
+	var once sync.Once
+	shutdown := func() { once.Do(func() { _ = conn.Close(); _ = up.Close() }) }
+	go func() {
+		_, _ = io.Copy(up, br)
+		shutdown()
+	}()
 	_, _ = io.Copy(conn, up)
+	shutdown()
 }
 
 func (m *Manager) tcpAccess(listenerID, sni, backend string, ok bool) {

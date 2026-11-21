@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"net/http"
 	"strconv"
 	"strings"
@@ -150,12 +151,14 @@ func (m *systemModule) backup(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, http.MethodGet) {
 		return
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=fngate-state.json")
-	if err := m.s.svc.Store.Export(w); err != nil {
+	var buf bytes.Buffer
+	if err := m.s.svc.Store.Export(&buf); err != nil {
 		writeErr(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=fngate-state.json")
+	_, _ = w.Write(buf.Bytes())
 	m.s.svc.Bus.Publish("system", "info", "已导出配置备份（不含私钥与凭据）")
 }
 

@@ -6,11 +6,11 @@
   var filters = { source: 'all', status: 'all', q: '' };
 
   var sourceLabel = {
-    manual: '手动上传', fnos: '飞牛系统证书', acme: 'ACME 申请', selfsigned: '自签证书'
+    manual: '手动上传', acme: 'ACME 申请', selfsigned: '自签证书'
   };
   var sourceTabs = [
     ['all', '全部'], ['acme', 'ACME 申请'], ['manual', '手动上传'],
-    ['selfsigned', '自签证书'], ['fnos', '飞牛系统证书']
+    ['selfsigned', '自签证书']
   ];
   var statusOptions = [
     ['all', '全部状态'], ['valid', '有效'], ['expiring', '即将到期'],
@@ -69,7 +69,7 @@
   function tableHTML(all) {
     var certs = applyFilters(all);
     if (!all.length) {
-      return FG.empty('证书库还是空的', '可「上传证书」、生成自签证书，或点击「同步飞牛证书」导入系统已有证书');
+      return FG.empty('证书库还是空的', '可「上传证书」、生成自签证书，或通过「ACME 申请」签发');
     }
     if (!certs.length) {
       return FG.empty('当前筛选没有匹配的证书', '试试切换来源分类、状态，或清空搜索关键词');
@@ -82,7 +82,7 @@
       html += '<tr><td><strong>' + FG.esc(c.name || c.primary_domain) + '</strong>' +
         '<br><span class="mono muted" style="font-size:12px">' + FG.esc(c.primary_domain) + '</span></td>' +
         '<td class="mono" style="font-size:12px">' + (sans || '<span class="muted">-</span>') + '</td>' +
-        '<td>' + FG.badge(sourceLabel[c.source] || c.source, c.source === 'fnos' ? 'tag-purple' : (c.source === 'acme' ? 'tag-green' : 'tag-blue')) + '</td>' +
+        '<td>' + FG.badge(sourceLabel[c.source] || c.source, c.source === 'acme' ? 'tag-green' : 'tag-blue') + '</td>' +
         '<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis" title="' + FG.esc(c.issuer) + '">' + FG.esc(c.issuer) + '</td>' +
         '<td class="muted" style="font-size:12px;white-space:nowrap">' + FG.fmtDate(c.not_after) + '<br>' + daysTag(c) + '</td>' +
         '<td>' + statusTag(c) + '</td>' +
@@ -189,11 +189,10 @@
 
   FG.register('cert', {
     title: '证书管理',
-    sub: '飞牛系统证书、手动上传与自签证书统一供给反向代理',
+    sub: '本应用申请、上传与自签的证书，统一供给反向代理使用',
     render: async function (root) {
       data = await FG.api('api/cert/list');
       var certs = data.certificates || [];
-      var fnosCount = certs.filter(function (c) { return c.source === 'fnos'; }).length;
       var failing = data.failing_orders || [];
       var expDays = data.expiring_days || 30;
 
@@ -202,7 +201,7 @@
         card('⏳', '#d97706', '#fff3e0', expDays + ' 天内到期', data.expiring || 0, '点击筛选即将到期', 'expiring') +
         card('!', (data.expired || 0) > 0 ? '#dc2626' : '#16a34a', (data.expired || 0) > 0 ? '#fdecec' : '#e8f7ed',
           '已过期', data.expired || 0, '请尽快替换或续期', 'expired') +
-        card('◇', '#7c3aed', '#f1eafe', '飞牛系统证书', fnosCount, '只读导入，不回写系统证书库') +
+        card('◇', '#7c3aed', '#f1eafe', '自签证书', certs.filter(function (c) { return c.source === 'selfsigned'; }).length, '内网临时使用') +
         '</section>';
 
       if (data.missing) {
@@ -217,7 +216,6 @@
       html += '<section class="panel"><div class="panel-head"><div><h2>证书列表 <span class="count-badge">' + certs.length +
         '</span></h2><p>在 HTTPS 入口或路由中按 ID 引用；续期后引用自动生效，无需重启</p></div>' +
         '<div class="panel-actions">' +
-        '<button type="button" class="btn" data-act="sync">同步飞牛证书</button>' +
         '<button type="button" class="btn" data-act="selfsigned">+ 自签证书</button>' +
         '<button type="button" class="btn" data-act="acme">+ ACME 申请</button>' +
         '<button type="button" class="btn btn-primary" data-act="upload">+ 上传证书</button>' +
@@ -233,9 +231,8 @@
         '<div class="panel-body" style="padding:0" id="cert-table-wrap">' + tableHTML(certs) + '</div></section>';
 
       html += '<p class="hint" style="color:var(--text-3);font-size:12px">' +
-        '飞牛系统证书为只读导入，不会修改飞牛证书库；同步由 root 侧 helper 生成私有快照，降权后的应用进程只读取快照。' +
-        (data.fnos_synced_at ? '上次快照：' + FG.esc(data.fnos_synced_at) + '（' + (data.fnos_snapshot || 0) + ' 张）' : '尚未生成快照') +
-        ' · 「下载」只给公钥证书链；「导出」会把证书链与私钥打包成 ZIP（二次确认后），用于导入飞牛系统证书。</p>';
+        '证书只在本应用内管理，不会读取或修改飞牛系统的证书库。「下载」只给公钥证书链；' +
+        '「导出」会把证书链与私钥打包成 ZIP（二次确认后），便于导入到其他设备。</p>';
 
       root.innerHTML = html;
 
@@ -283,15 +280,6 @@
             FG.toast('续期任务已排队，可在「证书申请」查看进度', 'ok'); FG.refresh();
             return;
           }
-          if (attr('data-act') === 'sync') {
-            FG.toast('正在同步飞牛系统证书…');
-            var s = await FG.api('api/cert/fnos/sync', { method: 'POST' });
-            var msg = '同步完成：新增 ' + (s.imported || 0) + '、更新 ' + (s.updated || 0) + '、移除 ' + (s.removed || 0);
-            if (s.note) msg += '。' + s.note;
-            FG.toast(msg, 'ok');
-            FG.refresh();
-            return;
-          }
           if (attr('data-detail')) {
             var d = await FG.api('api/cert/' + attr('data-detail'));
             detailModal(find(attr('data-detail')) || d.certificate, d);
@@ -319,7 +307,7 @@
           if (attr('data-export')) {
             var ec = find(attr('data-export'));
             var goOn = await FG.confirmBox(
-              '导出包内含该证书的私钥（privkey.pem），用于导入飞牛系统证书。\n' +
+              '导出包内含该证书的私钥（privkey.pem），请妥善保管。\n' +
               '私钥等同于域名身份，任何拿到它的人都能冒充该域名 —— 请勿转发，导入完成后删除本地副本。\n\n继续导出？',
               '导出证书包');
             if (!goOn) return;

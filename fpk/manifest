@@ -1,7 +1,7 @@
 appname="fngate"
-version="1.2.16"
+version="1.2.17"
 display_name="路由网关"
-desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（飞牛证书导入、ACME 泛域名申请与自动续期、手动上传）。三模块统一管理，原生应用，无需 Docker。"
+desc="飞牛原生网关应用：UPnP 路由端口转发、HTTP/HTTPS/TCP 反向代理、证书管理（ACME 泛域名申请与自动续期、手动上传、自签证书）。三模块统一管理，原生应用，无需 Docker。"
 source="thirdparty"
 platform="all"
 
@@ -18,4 +18,4 @@ desktop_uidir="ui"
 desktop_applaunchname="fngate.main"
 disable_authorization_path=true
 
-changelog="1.2.16 移除「同步到飞牛系统 HTTPS」功能：不再安装/运行任何 root 守护进程，不再写入飞牛证书目录与数据库，也不再重启 network_service、trim_nginx；证书管理回到 1.2.7 的技能集（申请、自动续期、上传、导出证书包、从飞牛导入）。本版本代码等同 1.2.7，仅版本号提升以便覆盖降级安装。1.2.7 修复反向代理下 WebSocket 握手返回 502；1.2.6 非本机内部 IP 提示与 fake-ip 修正；1.2.5 挑剔固件 402 兼容。"
+changelog="1.2.17 移除飞牛证书导入（--cert-sync），证书库只管理本应用申请、上传、自签的证书，完全不读取或修改飞牛系统证书；移除无用的 DNS 解析查询与一键体检；界面重构（更简洁的卡片与表格、移动端抽屉菜单与表格卡片化）；修复定时任务 panic 静默、EventBus 竞态、连接池泄漏、TCP 转发悬挂 goroutine 等代码缺陷。1.2.16 移除同步到飞牛系统 HTTPS 的 root 守护；1.2.7 修复反向代理 WebSocket 502。"

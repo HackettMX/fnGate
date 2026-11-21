@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"fngate/cert"
 )
 
 // Config 全部来自环境变量，命令行 flag 仅用于本地调试。
@@ -21,11 +19,6 @@ type Config struct {
 	SocketPath    string
 	GatewayPrefix string
 	LogLevel      string
-	SysCertConf   string
-	SysCertExtra  string
-	SysConfPaths  []string
-	SysSSLRoots   []string
-	SysAllowed    []string
 }
 
 func envString(names []string, def string) string {
@@ -100,16 +93,7 @@ func LoadConfig(dataFlag string, webPortFlag int) Config {
 		SocketPath:    envString([]string{"FNGATE_SOCKET"}, ""),
 		GatewayPrefix: strings.TrimSuffix(envString([]string{"FNGATE_GATEWAY_PREFIX"}, "/app/fngate"), "/"),
 		LogLevel:      strings.ToUpper(envString([]string{"FNGATE_LOG_LEVEL"}, "INFO")),
-		// root helper 读取的系统证书索引，只允许固定白名单路径，不接受前端传参。
-		SysCertConf:  envString([]string{"FNGATE_SYS_CERT_CONF"}, "/usr/trim/etc/network_cert_all.conf"),
-		SysCertExtra: envString([]string{"FNGATE_SYS_CERT_EXTRA"}, "/usr/trim/etc/network_gateway_cert.conf"),
 	}
 	// 多路径探测：环境变量优先，随后补上各 fnOS 版本常见位置。
-	cfg.SysConfPaths = prependUnique(
-		envList([]string{"FNGATE_SYS_CERT_PATHS"}, nil),
-		prependUnique([]string{cfg.SysCertConf, cfg.SysCertExtra}, cert.DefaultConfPaths()),
-	)
-	cfg.SysSSLRoots = prependUnique(envList([]string{"FNGATE_SYS_CERT_SSL_ROOTS"}, nil), cert.DefaultSSLRoots())
-	cfg.SysAllowed = prependUnique(envList([]string{"FNGATE_SYS_CERT_ROOTS"}, nil), cert.DefaultAllowedRoots())
 	return cfg
 }

@@ -4,24 +4,6 @@
   var data = { providers: [] };
   var specs = [];
 
-  // 解析查询/体检的页面级状态：切页或刷新后仍保留上一次结果。
-  var rq = {
-    servers: [],        // [{server, label, on}]
-    types: ['A', 'AAAA', 'CNAME', 'TXT', 'NS', 'SOA', 'MX', 'CAA'],
-    qtype: 'A',
-    follow: true,
-    name: '',
-    lastQuery: null,
-    lastDiagnose: null
-  };
-
-  var statusMeta = {
-    pass: { cls: 'tag-green', text: '通过', ico: '✓' },
-    warn: { cls: 'tag-amber', text: '注意', ico: '!' },
-    fail: { cls: 'tag-red', text: '失败', ico: '✗' },
-    skip: { cls: '', text: '跳过', ico: '–' }
-  };
-
   function card(icon, color, bg, label, value, sub) {
     return '<div class="stat-card"><div class="stat-icon" style="--c:' + color + ';--bg:' + bg + '">' + icon + '</div>' +
       '<div class="stat-meta"><span class="stat-label">' + label + '</span><span class="stat-value">' + FG.esc(value) + '</span>' +
@@ -54,120 +36,6 @@
     if (p.type === 'manual') return '<span class="muted">—</span>';
     var n = p.zone_count > 0 ? p.zone_count + ' 个' : '<span class="muted">未读取</span>';
     return n + '<br><span class="link" data-zones="' + FG.esc(p.id) + '" style="font-size:12px">查看域名</span>';
-  }
-
-  // ---------- 解析查询：服务器选择 ----------
-
-  function buildServers(res) {
-    var list = [], index = {};
-    var selected = res.selected || [];
-    function push(server, label, on) {
-      if (!server) return;
-      if (index[server]) { if (on) index[server].on = true; return; }
-      var item = { server: server, label: label || server, on: !!on };
-      index[server] = item;
-      list.push(item);
-    }
-    (res.system || []).forEach(function (s) { push(s, '系统 DNS', selected.indexOf(s) >= 0); });
-    (res.presets || []).forEach(function (p) { push(p.server, p.label, selected.indexOf(p.server) >= 0); });
-    (res.custom || []).forEach(function (s) { push(s, '自定义 ' + s, true); });
-    return list;
-  }
-
-  function chips() {
-    if (!rq.servers.length) return '<span class="muted">没有可用的 DNS 服务器</span>';
-    return rq.servers.map(function (s) {
-      return '<button type="button" class="chip' + (s.on ? ' on' : '') + '" data-srv="' + FG.esc(s.server) + '">' +
-        FG.esc(s.label) + '<span class="chip-addr">' + FG.esc(s.server) + '</span></button>';
-    }).join('');
-  }
-
-  function selectedServers() {
-    return rq.servers.filter(function (s) { return s.on; }).map(function (s) { return s.server; });
-  }
-
-  function rcodeBadge(r) {
-    if (r.error) return FG.badge('无响应', 'tag-red');
-    if (r.rcode === 'NOERROR') return FG.badge('NOERROR', 'tag-green');
-    if (r.rcode === 'NXDOMAIN') return FG.badge('NXDOMAIN', 'tag-amber');
-    return FG.badge(r.rcode || '?', 'tag-red');
-  }
-
-  function renderQuery() {
-    var el = document.getElementById('rq-result');
-    if (!el) return;
-    var r = rq.lastQuery;
-    if (!r) {
-      el.innerHTML = '<section class="panel"><div class="panel-body">' +
-        FG.empty('还没有查询结果', '输入域名后点「查询记录」，会同时向所有勾选的 DNS 发起查询并排对比') +
-        '</div></section>';
-      return;
-    }
-
-    var head = '<section class="panel"><div class="panel-head"><div><h2>' + FG.esc(r.name) +
-      ' <span class="count-badge">' + FG.esc(r.type) + '</span></h2><p>' +
-      FG.esc(r.summary) + ' · 耗时 ' + r.elapsed_ms + ' ms</p></div>' +
-      '<div class="panel-actions">' + (r.consistent ? FG.badge('结果一致', 'tag-green') : FG.badge('存在差异', 'tag-amber')) +
-      '</div></div><div class="panel-body" style="padding:0">';
-
-    var chain = '';
-    if (r.chain && r.chain.length) {
-      chain = '<div class="resolve-chain">CNAME 链：' +
-        r.chain.map(function (n) { return '<span class="chain-node">' + FG.esc(n) + '</span>'; }).join('<span class="chain-arrow">→</span>') +
-        '</div>';
-    }
-
-    var rows = r.results.map(function (x) {
-      var answers = (x.answers || []).length
-        ? x.answers.map(function (a) { return '<div class="mono ans">' + FG.esc(a) + '</div>'; }).join('')
-        : '<span class="muted">' + (x.error ? '—' : '空（无该类型记录）') + '</span>';
-      var auth = (x.authority || []).length
-        ? '<div class="muted mono" style="font-size:11.5px;margin-top:4px">authority: ' + FG.esc(x.authority[0]) + '</div>'
-        : '';
-      return '<tr><td class="mono" style="font-size:12px;white-space:nowrap">' + FG.esc(x.server) + '</td>' +
-        '<td>' + rcodeBadge(x) + (x.truncated ? '<br><span class="muted" style="font-size:11px">已截断重试</span>' : '') + '</td>' +
-        '<td>' + answers + auth + (x.error ? '<div class="muted" style="font-size:11.5px;color:#dc2626">' + FG.esc(x.error) + '</div>' : '') + '</td>' +
-        '<td class="muted" style="font-size:12px;white-space:nowrap">' + x.elapsed_ms + ' ms</td></tr>';
-    }).join('');
-
-    el.innerHTML = head + chain +
-      '<div class="table-wrap"><table><thead><tr><th>服务器</th><th>响应码</th><th>答案</th><th>耗时</th></tr></thead><tbody>' +
-      rows + '</tbody></table></div></div></section>';
-  }
-
-  function renderDiagnose() {
-    var el = document.getElementById('rq-diagnose');
-    if (!el) return;
-    var d = rq.lastDiagnose;
-    if (!d) { el.innerHTML = ''; return; }
-
-    var tone = d.fail_count > 0 ? 'danger' : (d.warn_count > 0 ? 'warn' : 'ok');
-    var icon = d.fail_count > 0 ? '!' : (d.warn_count > 0 ? 'i' : '✓');
-    var noticeCls = tone === 'danger' ? 'notice danger' : (tone === 'warn' ? 'notice' : 'notice ok');
-
-    var checks = d.checks.map(function (c) {
-      var meta = statusMeta[c.status] || statusMeta.skip;
-      return '<div class="check-row check-' + c.status + '">' +
-        '<span class="check-ico">' + meta.ico + '</span>' +
-        '<div class="check-body"><div class="check-title"><strong>' + FG.esc(c.name) + '</strong>' +
-        FG.badge(meta.text, meta.cls) + '</div>' +
-        '<p>' + FG.esc(c.detail || '') + '</p>' +
-        (c.advice ? '<p class="check-advice">建议：' + FG.esc(c.advice) + '</p>' : '') +
-        '</div></div>';
-    }).join('');
-
-    el.innerHTML = '<section class="panel"><div class="panel-head"><div><h2>域名体检 <span class="count-badge">' +
-      FG.esc(d.domain) + '</span></h2><p>区域 ' + FG.esc(d.zone || '未知') +
-      (d.nameservers && d.nameservers.length ? ' · 权威 NS：' + FG.esc(d.nameservers.join('、')) : '') +
-      ' · 耗时 ' + d.elapsed_ms + ' ms</p></div>' +
-      '<div class="panel-actions">' + FG.badge('通过 ' + d.pass_count, 'tag-green') +
-      (d.warn_count ? FG.badge('注意 ' + d.warn_count, 'tag-amber') : '') +
-      (d.fail_count ? FG.badge('失败 ' + d.fail_count, 'tag-red') : '') + '</div></div>' +
-      '<div class="panel-body">' +
-      '<div class="' + noticeCls + '"><span class="notice-icon">' + icon + '</span><div class="notice-body">' +
-      '<strong>' + FG.esc(d.verdict) + '</strong></div></div>' +
-      '<div class="check-list">' + checks + '</div>' +
-      '</div></section>';
   }
 
   // ---------- 添加 / 编辑弹窗 ----------
@@ -320,20 +188,15 @@
   // ---------- 页面 ----------
 
   FG.register('dns', {
-    title: '域名解析',
-    sub: '解析查询与签发前体检，以及 DNSPod / 阿里云 / Cloudflare 凭据管理',
+    title: 'DNS 服务商',
+    sub: '管理 ACME 验证用的 DNS 凭据（DNSPod / 阿里云 / Cloudflare 等）',
     render: async function (root) {
       var res = await Promise.all([
         FG.api('api/dns/providers'),
-        FG.api('api/dns/types').catch(function () { return { types: [] }; }),
-        rq.servers.length ? Promise.resolve(null) : FG.api('api/dns/resolvers').catch(function () { return null; })
+        FG.api('api/dns/types').catch(function () { return { types: [] }; })
       ]);
       data = res[0] || data;
       specs = (res[1] && res[1].types) || specs;
-      if (res[2]) {
-        rq.servers = buildServers(res[2]);
-        rq.types = res[2].types || rq.types;
-      }
 
       var providers = data.providers || [];
       var ok = providers.filter(function (p) { return p.last_check_ok; }).length;
@@ -386,51 +249,12 @@
         'DNS 服务商被证书用于自动续期时不可删除；如需更换，请先在「证书申请」里切换服务商。' +
         '「查看域名」读取的是该账号下真实存在的解析域名，签发前可据此确认域名是否已托管。</p>';
 
-      // ---- 解析查询 ----
-      html += '<section class="panel"><div class="panel-head"><div><h2>解析查询</h2>' +
-        '<p>同时向多台 DNS 发起同一查询，用于判断记录是否写对、是否已经传播</p></div></div>' +
-        '<div class="panel-body">' +
-        '<div class="resolve-form">' +
-        '<input type="text" id="rq-name" placeholder="example.com 或 _acme-challenge.example.com" value="' + FG.esc(rq.name) + '" />' +
-        '<select id="rq-type">' + rq.types.map(function (t) {
-          return '<option value="' + t + '"' + (rq.qtype === t ? ' selected' : '') + '>' + t + '</option>';
-        }).join('') + '</select>' +
-        '<button type="button" class="btn btn-primary" data-act="query">查询记录</button>' +
-        '<button type="button" class="btn" data-act="diagnose">一键体检</button>' +
-        '<label class="checkbox" style="white-space:nowrap"><input type="checkbox" id="rq-follow"' +
-          (rq.follow ? ' checked' : '') + ' /> 跟随 CNAME</label>' +
-        '</div>' +
-        '<div class="resolve-servers"><span class="resolve-label">DNS 服务器</span><div class="chips" id="rq-servers">' +
-        chips() + '</div></div>' +
-        '<p class="hint" style="color:var(--text-3);font-size:12px;margin-top:8px">' +
-        '默认使用设置里的服务器（系统 DNS + 国内公共 DNS）。查询只发出 DNS 请求，不会创建或修改任何记录。' +
-        '签发失败时，对报错域名点「一键体检」可查清 CNAME 落点与传播状态。</p>' +
-        '</div></section>';
-
-      html += '<div id="rq-result"></div><div id="rq-diagnose"></div>';
-
       root.innerHTML = html;
-      renderQuery();
-      renderDiagnose();
 
       root.onclick = async function (e) {
         var t = e.target;
         function attr(n) { return t.getAttribute && t.getAttribute(n); }
         try {
-          // 解析查询
-          var srvEl = t.closest ? t.closest('[data-srv]') : null;
-          if (srvEl) {
-            var srv = srvEl.getAttribute('data-srv');
-            rq.servers.forEach(function (s) { if (s.server === srv) s.on = !s.on; });
-            var box = document.getElementById('rq-servers');
-            if (box) box.innerHTML = chips();
-            return;
-          }
-          var actEl = t.closest ? t.closest('[data-act]') : null;
-          var act = actEl ? actEl.getAttribute('data-act') : '';
-          if (act === 'query') { await doQuery(); return; }
-          if (act === 'diagnose') { await doDiagnose(); return; }
-
           // 服务商
           if (act === 'add') { providerModal(null); return; }
           if (attr('data-edit')) { var p1 = find(attr('data-edit')); if (p1) providerModal(p1); return; }
@@ -452,46 +276,6 @@
         } catch (err) { FG.toast(err.message, 'err'); }
       };
 
-      var nameEl = document.getElementById('rq-name');
-      if (nameEl) {
-        nameEl.addEventListener('keydown', function (ev) {
-          if (ev.key === 'Enter') { ev.preventDefault(); doQuery().catch(function (err) { FG.toast(err.message, 'err'); }); }
-        });
-      }
-      var typeEl = document.getElementById('rq-type');
-      if (typeEl) typeEl.addEventListener('change', function () { rq.qtype = this.value; });
-      var followEl = document.getElementById('rq-follow');
-      if (followEl) followEl.addEventListener('change', function () { rq.follow = this.checked; });
-
-      async function doQuery() {
-        var name = (document.getElementById('rq-name') || {}).value || '';
-        if (!name.trim()) { FG.toast('请输入要查询的域名', 'err'); return; }
-        if (!selectedServers().length) { FG.toast('请至少选择一台 DNS 服务器', 'err'); return; }
-        rq.name = name.trim();
-        rq.qtype = (document.getElementById('rq-type') || {}).value || rq.qtype;
-        var el = document.getElementById('rq-result');
-        if (el) el.innerHTML = '<section class="panel"><div class="panel-body"><span class="spinner"></span> 正在查询 ' + FG.esc(name) + '…</div></section>';
-        rq.lastQuery = await FG.api('api/dns/resolve/query', {
-          method: 'POST',
-          body: { name: rq.name, type: rq.qtype, servers: selectedServers(), follow: rq.follow }
-        });
-        renderQuery();
-      }
-
-      async function doDiagnose() {
-        var name = (document.getElementById('rq-name') || {}).value || '';
-        if (!name.trim()) { FG.toast('请输入要体检的域名', 'err'); return; }
-        if (!selectedServers().length) { FG.toast('请至少选择一台 DNS 服务器', 'err'); return; }
-        rq.name = name.trim();
-        var el = document.getElementById('rq-diagnose');
-        if (el) el.innerHTML = '<section class="panel"><div class="panel-body"><span class="spinner"></span> 正在体检 ' + FG.esc(name) + '…</div></section>';
-        rq.lastDiagnose = await FG.api('api/dns/resolve/diagnose', {
-          method: 'POST', body: { domain: rq.name, servers: selectedServers() }
-        });
-        renderDiagnose();
-        el = document.getElementById('rq-diagnose');
-        if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
     }
   });
 })();

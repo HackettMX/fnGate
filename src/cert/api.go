@@ -24,7 +24,6 @@ func (a *API) Routes() http.Handler {
 	mux.HandleFunc("GET /status", a.status)
 	mux.HandleFunc("POST /upload", a.upload)
 	mux.HandleFunc("POST /selfsigned", a.selfsigned)
-	mux.HandleFunc("POST /fnos/sync", a.fnosSync)
 	mux.HandleFunc("POST /default", a.setDefault)
 	mux.HandleFunc("GET /{id}", a.detail)
 	mux.HandleFunc("GET /{id}/references", a.references)
@@ -72,7 +71,6 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 			failing = append(failing, map[string]string{"id": o.ID, "name": strings.Join(o.Domains, ", "), "error": o.Error})
 		}
 	}
-	syncedAt, snapshotCount := a.m.SnapshotInfo()
 	// 到期阈值跟随设置里的「续期提前天数」，前端文案据此显示，不写死 30 天。
 	expiringDays := st.Settings.RenewDays
 	if expiringDays <= 0 {
@@ -86,8 +84,6 @@ func (a *API) list(w http.ResponseWriter, r *http.Request) {
 		"expiring_days":   expiringDays,
 		"default_cert_id": st.Settings.DefaultCertID,
 		"failing_orders":  failing,
-		"fnos_synced_at":  syncedAt,
-		"fnos_snapshot":   snapshotCount,
 	})
 }
 
@@ -148,16 +144,6 @@ func (a *API) selfsigned(w http.ResponseWriter, r *http.Request) {
 	}
 	a.m.Bus().Publish("cert", "warn", "已生成自签证书「%s」，浏览器不会信任，仅建议内网临时使用", c.Name)
 	api.WriteOK(w, map[string]interface{}{"certificate": c.ID, "name": c.Name})
-}
-
-func (a *API) fnosSync(w http.ResponseWriter, r *http.Request) {
-	res, err := a.m.Sync()
-	if err != nil {
-		api.WriteErr(w, http.StatusBadRequest, "%v", err)
-		return
-	}
-	a.m.Bus().Publish("cert", "info", "已执行飞牛系统证书同步")
-	api.WriteOK(w, res)
 }
 
 type defaultPayload struct {
@@ -348,7 +334,8 @@ type updatePayload struct {
 	AutoRenew *bool  `json:"auto_renew"`
 }
 
-func (a *API) update(w http.ResponseWriter, r *http.Request) {	id := r.PathValue("id")
+func (a *API) update(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	var p updatePayload
 	if err := api.DecodeJSON(r, &p); err != nil {
 		api.WriteErr(w, http.StatusBadRequest, "%v", err)

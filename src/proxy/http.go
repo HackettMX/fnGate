@@ -18,8 +18,9 @@ import (
 )
 
 type proxyEntry struct {
-	rp      *httputil.ReverseProxy
-	backend Backend
+	rp        *httputil.ReverseProxy
+	backend   Backend
+	transport *http.Transport
 }
 
 // statusRecorder 只记录状态码，其余接口必须原样透传。
@@ -166,15 +167,24 @@ func (m *Manager) getProxy(r core.Route, incoming string) (*proxyEntry, error) {
 			_, _ = fmt.Fprintf(w, "fnGate: 转发到 %s 失败\n%v\n", bd.URL(), err)
 		},
 	}
-	entry := &proxyEntry{rp: rp, backend: bd}
-	actual, _ := m.proxyCache.LoadOrStore(key, entry)
+	entry := &proxyEntry{rp: rp, backend: bd, transport: transport}
+	actual, loaded := m.proxyCache.LoadOrStore(key, entry)
+	if loaded {
+		// 并发创建时被丢弃的条目要立刻关闭，避免连接池泄漏。
+		transport.CloseIdleConnections()
+	}
 	return actual.(*proxyEntry), nil
 }
 
 func (m *Manager) pruneCache(valid map[string]bool) {
-	m.proxyCache.Range(func(key, _ interface{}) bool {
+	m.proxyCache.Range(func(key, value interface{}) bool {
 		if !valid[key.(string)] {
 			m.proxyCache.Delete(key)
+			// 删除前关闭该路由的 keep-alive 连接池，否则旧连接与
+			// 读写 goroutine 要等 IdleConnTimeout 才回收，反复编辑会累积。
+			if entry, ok := value.(*proxyEntry); ok && entry.transport != nil {
+				entry.transport.CloseIdleConnections()
+			}
 		}
 		return true
 	})

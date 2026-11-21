@@ -193,7 +193,14 @@ func (m *Manager) startListener(l core.Listener) (*listenerRuntime, error) {
 	rt := &listenerRuntime{spec: specOf(l), ln: ln, conns: newConnSet()}
 	switch l.Protocol {
 	case "http", "https":
-		srv := &http.Server{Handler: m.buildHTTPHandler(l.ID, l.Protocol), ReadHeaderTimeout: 10 * time.Second}
+		// 反代可能承载 SSE / 长下载，不设 WriteTimeout；
+		// 只读超时与空闲超时防止慢客户端长期占用连接。
+		srv := &http.Server{
+			Handler:           m.buildHTTPHandler(l.ID, l.Protocol),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
 		var serveLn net.Listener = ln
 		if l.Protocol == "https" {
 			serveLn = tls.NewListener(ln, m.tlsConfig(l))

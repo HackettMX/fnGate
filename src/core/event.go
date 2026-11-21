@@ -14,17 +14,15 @@ type Event struct {
 	Message string `json:"message"`
 }
 
-// EventBus 保存最近若干条事件供界面轮询，并支持内部订阅。
+// EventBus 保存最近若干条事件供界面轮询。
 type EventBus struct {
 	mu     sync.RWMutex
 	events []Event
 	seq    int64
-	subs   map[int64]chan Event
-	nextID int64
 }
 
 func NewEventBus() *EventBus {
-	return &EventBus{events: make([]Event, 0, 256), subs: map[int64]chan Event{}}
+	return &EventBus{events: make([]Event, 0, 256)}
 }
 
 func (b *EventBus) Publish(module, level, format string, args ...interface{}) {
@@ -36,17 +34,7 @@ func (b *EventBus) Publish(module, level, format string, args ...interface{}) {
 	if len(b.events) > 300 {
 		b.events = append([]Event(nil), b.events[len(b.events)-300:]...)
 	}
-	targets := make([]chan Event, 0, len(b.subs))
-	for _, ch := range b.subs {
-		targets = append(targets, ch)
-	}
 	b.mu.Unlock()
-	for _, ch := range targets {
-		select {
-		case ch <- e:
-		default:
-		}
-	}
 }
 
 // Since 返回 id 大于 after 的事件，最多 200 条。
@@ -63,30 +51,4 @@ func (b *EventBus) Since(after int64) []Event {
 		out = out[len(out)-200:]
 	}
 	return out
-}
-
-func (b *EventBus) Recent(n int) []Event {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if n <= 0 || n > len(b.events) {
-		n = len(b.events)
-	}
-	out := make([]Event, n)
-	copy(out, b.events[len(b.events)-n:])
-	return out
-}
-
-func (b *EventBus) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 32)
-	b.mu.Lock()
-	b.nextID++
-	id := b.nextID
-	b.subs[id] = ch
-	b.mu.Unlock()
-	return ch, func() {
-		b.mu.Lock()
-		delete(b.subs, id)
-		b.mu.Unlock()
-		close(ch)
-	}
 }

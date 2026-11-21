@@ -127,6 +127,42 @@
 
   function register(name, def) { pages[name] = def; }
 
+  // 移动端把表格转成卡片：把表头文字写入 td 的 data-label，CSS 在窄屏显示。
+  // 一次注入覆盖所有页面，避免在每个页面 JS 里重复写 data-label。
+  function enhanceTables(root) {
+    root.querySelectorAll('.table-wrap table').forEach(function (table) {
+      var heads = [];
+      table.querySelectorAll('thead th').forEach(function (th) { heads.push(th.textContent.trim()); });
+      table.querySelectorAll('tbody tr').forEach(function (tr) {
+        Array.prototype.forEach.call(tr.children, function (td, i) {
+          if (heads[i] && !td.hasAttribute('data-label')) td.setAttribute('data-label', heads[i]);
+        });
+      });
+    });
+  }
+
+  // 移动端侧栏抽屉
+  function setupDrawer() {
+    var sidebar = document.querySelector('.sidebar');
+    var backdrop = document.getElementById('nav-backdrop');
+    var toggle = document.getElementById('nav-toggle');
+    if (!sidebar || !backdrop || !toggle) return;
+    function close() {
+      sidebar.classList.remove('open');
+      backdrop.classList.remove('show');
+    }
+    toggle.addEventListener('click', function () {
+      var open = !sidebar.classList.contains('open');
+      sidebar.classList.toggle('open', open);
+      backdrop.classList.toggle('show', open);
+    });
+    backdrop.addEventListener('click', close);
+    document.getElementById('nav').addEventListener('click', function (e) {
+      if (e.target.closest('.nav-item')) close();
+    });
+    window.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  }
+
   async function show(name) {
     if (!pages[name]) name = 'overview';
     current = name;
@@ -141,6 +177,7 @@
     pageEl.innerHTML = '<div class="panel"><div class="empty"><span class="spinner"></span> 正在加载…</div></div>';
     try {
       await def.render(pageEl);
+      enhanceTables(pageEl);
       await updateStatus();
     } catch (e) {
       pageEl.innerHTML = '<div class="notice danger"><span class="notice-icon">!</span><div class="notice-body"><strong>加载失败</strong><p>' + esc(e.message) + '</p></div></div>';
@@ -169,11 +206,13 @@
     if (!def || !pageEl) return;
     try {
       await (def.poll || def.render)(pageEl);
+      enhanceTables(pageEl);
       await updateStatus();
     } catch (e) { /* 轮询失败不打断界面 */ }
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    setupDrawer();
     document.getElementById('nav').addEventListener('click', function (e) {
       var btn = e.target.closest('.nav-item');
       if (btn) show(btn.getAttribute('data-page'));

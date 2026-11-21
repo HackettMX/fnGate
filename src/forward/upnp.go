@@ -87,10 +87,11 @@ func (c *igdConn) externalIP(ctx context.Context) (string, error) {
 
 // addPortMapping 添加映射。部分国产路由器/光猫对 UPnP 参数格外挑剔，
 // 对完全合规的请求也返回 402 Invalid Args。这里按序降级重试：
-//   1) 空 RemoteHost + 原样租期（标准写法，绝大多数路由器接受）
-//   2) RemoteHost="*" + 原样租期（少数固件不接受空串）
-//   3) 空 RemoteHost + 有限租期（部分光猫不接受 LeaseDuration=0 表示永久）
-//   4) RemoteHost="*" + 有限租期
+//  1. 空 RemoteHost + 原样租期（标准写法，绝大多数路由器接受）
+//  2. RemoteHost="*" + 原样租期（少数固件不接受空串）
+//  3. 空 RemoteHost + 有限租期（部分光猫不接受 LeaseDuration=0 表示永久）
+//  4. RemoteHost="*" + 有限租期
+//
 // 400/501/718 等明确错误不重试，避免掩盖真实问题。
 // portMappingVariant 是一次 AddPortMapping 调用的参数组合。
 type portMappingVariant struct {

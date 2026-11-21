@@ -5,13 +5,11 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +34,6 @@ func newTestManager(t *testing.T) (*Manager, string) {
 	}
 	m := New(Options{
 		DataDir: dir, CertsDir: certsDir, SecretsDir: secretsDir,
-		SysConfPaths: []string{}, SysSSLRoots: []string{}, SysAllowedRoots: []string{dir},
 		Store: st, Bus: bus, Logger: log,
 	})
 	return m, dir
@@ -220,159 +217,6 @@ func TestDeleteBlockedByReferences(t *testing.T) {
 	}
 }
 
-func TestSyncSystemImportsFnosSnapshot(t *testing.T) {
-	m, dir := newTestManager(t)
-	cp, kp := selfSignedPEM(t, []string{"fn.example.com"})
-	sysDir := filepath.Join(dir, "fake-trim", "etc")
-	if err := os.MkdirAll(sysDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	certSrc := filepath.Join(sysDir, "fn.example.com.crt")
-	keySrc := filepath.Join(sysDir, "fn.example.com.key")
-	if err := os.WriteFile(certSrc, cp, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keySrc, kp, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	conf := map[string]interface{}{
-		"certs": []map[string]string{{
-			"host": "fn.example.com", "cert": certSrc, "key": keySrc,
-		}},
-	}
-	confRaw, _ := json.Marshal(conf)
-	confPath := filepath.Join(sysDir, "network_cert_all.conf")
-	if err := os.WriteFile(confPath, confRaw, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m.opt.SysConfPaths = []string{confPath}
-	m.opt.SysAllowedRoots = []string{sysDir}
-
-	res, err := SyncSystem(SyncOptions{
-		DataDir: dir, CertsDir: m.CertsDir(), SecretsDir: m.SecretsDir(),
-		ConfPaths: []string{confPath}, SSLRoots: []string{},
-		AllowedRoots: []string{sysDir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Written != 1 {
-		t.Fatalf("应写入 1 张飞牛证书，实际 %d warnings=%v", res.Written, res.Warnings)
-	}
-	imported, err := m.ImportFromSnapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if imported["imported"].(int) != 1 {
-		t.Fatalf("导入数量不对：%v", imported)
-	}
-	st := m.Store().Snapshot()
-	if len(st.Certificates) != 1 || st.Certificates[0].Source != "fnos" {
-		t.Fatalf("飞牛证书未登记：%+v", st.Certificates)
-	}
-	if !strings.HasPrefix(st.Certificates[0].Name, "飞牛证书") {
-		t.Fatalf("来源标识缺失：%s", st.Certificates[0].Name)
-	}
-	// 再同步一次应只更新不新增。
-	if _, err := m.ImportFromSnapshot(); err != nil {
-		t.Fatal(err)
-	}
-	if len(m.Store().Snapshot().Certificates) != 1 {
-		t.Fatal("重复同步产生了重复证书")
-	}
-	// 私钥文件权限必须是 0600。
-	info, err := os.Stat(filepath.Join(m.SecretsDir(), "certs", st.Certificates[0].ID, "privkey.pem"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Windows 的 os.Chmod 只映射只读位，无法表达 0600；
-	// 生产环境是 Linux（.fpk 只跑在 fnOS 上），这里仅在非 Windows 断言权限。
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("私钥权限过宽：%v", info.Mode().Perm())
-	}
-}
-
-func TestSyncSystemRejectsPathOutsideAllowlist(t *testing.T) {
-	m, dir := newTestManager(t)
-	cp, kp := selfSignedPEM(t, []string{"evil.example.com"})
-	sysDir := filepath.Join(dir, "fake-trim", "etc")
-	outside := filepath.Join(dir, "outside")
-	if err := os.MkdirAll(sysDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(outside, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	certSrc := filepath.Join(outside, "evil.crt")
-	keySrc := filepath.Join(outside, "evil.key")
-	_ = os.WriteFile(certSrc, cp, 0o644)
-	_ = os.WriteFile(keySrc, kp, 0o600)
-	confRaw, _ := json.Marshal([]map[string]string{{
-		"host": "evil.example.com", "cert": certSrc, "key": keySrc,
-	}})
-	confPath := filepath.Join(sysDir, "network_cert_all.conf")
-	_ = os.WriteFile(confPath, confRaw, 0o644)
-	res, err := SyncSystem(SyncOptions{
-		DataDir: dir, CertsDir: m.CertsDir(), SecretsDir: m.SecretsDir(),
-		ConfPaths: []string{confPath}, AllowedRoots: []string{sysDir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Written != 0 || res.Skipped != 1 {
-		t.Fatalf("白名单外的路径应被拒绝：%+v", res)
-	}
-	if len(m.Store().Snapshot().Certificates) != 0 {
-		t.Fatal("不应导入任何证书")
-	}
-}
-
-func TestSyncDoesNotEraseExistingSnapshot(t *testing.T) {
-	m, dir := newTestManager(t)
-	cp, kp := selfSignedPEM(t, []string{"keep.example.com"})
-	sysDir := filepath.Join(dir, "fake-trim", "etc")
-	_ = os.MkdirAll(sysDir, 0o755)
-	certSrc := filepath.Join(sysDir, "keep.crt")
-	keySrc := filepath.Join(sysDir, "keep.key")
-	_ = os.WriteFile(certSrc, cp, 0o644)
-	_ = os.WriteFile(keySrc, kp, 0o600)
-	confRaw, _ := json.Marshal([]map[string]string{{
-		"host": "keep.example.com", "cert": certSrc, "key": keySrc,
-	}})
-	confPath := filepath.Join(sysDir, "network_cert_all.conf")
-	_ = os.WriteFile(confPath, confRaw, 0o644)
-	opts := SyncOptions{
-		DataDir: dir, CertsDir: m.CertsDir(), SecretsDir: m.SecretsDir(),
-		AllowedRoots: []string{sysDir},
-	}
-	opts.ConfPaths = []string{confPath}
-	if _, err := SyncSystem(opts); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.ImportFromSnapshot(); err != nil {
-		t.Fatal(err)
-	}
-	// 模拟降权进程读不到系统证书：一次空同步不能把已有快照清空。
-	opts.ConfPaths = nil
-	opts.SSLRoots = nil
-	res, err := SyncSystem(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Written != 0 {
-		t.Fatal("无来源时不应写入证书")
-	}
-	if _, count := m.SnapshotInfo(); count != 1 {
-		t.Fatalf("已有快照被空同步覆盖，count=%d", count)
-	}
-	if _, err := m.ImportFromSnapshot(); err != nil {
-		t.Fatal(err)
-	}
-	if len(m.Store().Snapshot().Certificates) != 1 {
-		t.Fatal("证书被误删")
-	}
-}
-
 func parseLeaf(t *testing.T, c *tls.Certificate) *x509.Certificate {
 	t.Helper()
 	if c == nil || len(c.Certificate) == 0 {
@@ -385,8 +229,8 @@ func parseLeaf(t *testing.T, c *tls.Certificate) *x509.Certificate {
 	return leaf
 }
 
-// 「导出证书包」必须把证书链和私钥一起给到（飞牛系统证书要求 crt + key），
-// 且两者要能配成一对——否则用户导入后才在浏览器里发现握手失败。
+// 「导出证书包」必须把证书链和私钥一起给到，且两者要能配成一对，
+// 否则用户导入到其他系统后才在浏览器里发现握手失败。
 func TestExportBundleContainsPairedCertAndKey(t *testing.T) {
 	m, _ := newTestManager(t)
 	c, err := m.AddSelfSigned("导出测试", []string{"bundle.example.com"})

@@ -44,7 +44,7 @@
       return '<option value="' + FG.esc(p.id) + '"' + (prefill.provider_id === p.id ? ' selected' : '') + '>' +
         FG.esc(p.name) + '</option>';
     }).join('');
-    if (!data.providers.length) providerOpts = '<option value="">请先到「域名解析」页添加一个</option>';
+    if (!data.providers.length) providerOpts = '<option value="">请先到「DNS 服务商」页添加一个</option>';
     var accountOpts = '<option value="">自动选择 / 创建同 CA 的账户</option>' + data.accounts.map(function (a) {
       return '<option value="' + FG.esc(a.id) + '">' + FG.esc(caName(a.ca)) + (a.email ? ' · ' + FG.esc(a.email) : '') + '</option>';
     }).join('');
@@ -101,7 +101,7 @@
           key_type: mask.querySelector('#o-key').value || 'ec256',
           auto_renew: mask.querySelector('#o-renew').checked
         };
-        if (!payload.provider_id) { FG.fieldError(mask, '请先到「域名解析」页添加一个服务商（可选「手动添加 TXT 记录」）'); return false; }
+        if (!payload.provider_id) { FG.fieldError(mask, '请先到「DNS 服务商」页添加一个服务商（可选「手动添加 TXT 记录」）'); return false; }
         await FG.api('api/acme/orders', { method: 'POST', body: payload });
         FG.toast('申请任务已创建，可在「证书申请」查看进度', 'ok');
         FG.refresh();
@@ -196,10 +196,10 @@
     // 申请任务
     html += '<section class="panel"><div class="panel-head"><div><h2>申请任务 <span class="count-badge">' + orders.length +
       '</span></h2><p>创建订单 → DNS-01 验证 → 签发 → 原子落盘 → 反代引用自动生效</p></div>' +
-      '<div class="panel-actions"><button type="button" class="btn" data-act="provider">域名解析</button>' +
+      '<div class="panel-actions"><button type="button" class="btn" data-act="provider">DNS 服务商</button>' +
       '<button type="button" class="btn btn-primary" data-act="order">+ 申请证书</button></div></div><div class="panel-body" style="padding:0">';
     if (!orders.length) {
-      html += FG.empty('还没有申请任务', '先到「域名解析」页配置 DNS 服务商，再点「申请证书」；泛域名请填写 *.example.com');
+      html += FG.empty('还没有申请任务', '先到「DNS 服务商」页配置，再点「申请证书」；泛域名请填写 *.example.com');
     } else {
       html += '<div class="table-wrap"><table><thead><tr><th>状态</th><th>域名</th><th>CA / 验证</th><th>时间</th><th>说明</th><th>操作</th></tr></thead><tbody>';
       orders.forEach(function (o) {
@@ -309,7 +309,7 @@
 
   FG.register('acme', {
     title: '证书申请',
-    sub: 'DNS-01 泛域名申请与自动续期；服务商凭据在「域名解析」页管理',
+    sub: 'DNS-01 泛域名申请与自动续期；服务商凭据在「DNS 服务商」页管理',
     render: render,
     poll: render
   });

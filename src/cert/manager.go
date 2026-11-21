@@ -15,15 +15,12 @@ import (
 // Options 是证书模块的运行依赖。系统证书路径只允许来自启动配置，
 // 绝不接受 API 参数，避免降权进程借 root helper 读取任意文件。
 type Options struct {
-	DataDir         string
-	CertsDir        string
-	SecretsDir      string
-	SysConfPaths    []string
-	SysSSLRoots     []string
-	SysAllowedRoots []string
-	Store           *core.Store
-	Bus             *core.EventBus
-	Logger          *core.Logger
+	DataDir    string
+	CertsDir   string
+	SecretsDir string
+	Store      *core.Store
+	Bus        *core.EventBus
+	Logger     *core.Logger
 }
 
 type cachedCert struct {
@@ -31,8 +28,8 @@ type cachedCert struct {
 	stamp string
 }
 
-// Manager 同时承担三件事：证书库 CRUD、TLS 握手期的 CertResolver、
-// 以及飞牛系统证书快照的导入。它实现 proxy.CertResolver（Go 接口为结构化匹配，
+// Manager 承担两件事：证书库 CRUD 与 TLS 握手期的 CertResolver。
+// 它实现 proxy.CertResolver（Go 接口为结构化匹配，
 // 因此本包无需 import proxy，不存在循环依赖）。
 type Manager struct {
 	opt Options
